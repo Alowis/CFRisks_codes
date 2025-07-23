@@ -19,12 +19,18 @@ library(modifiedmk)
 library(ks)
 library(pracma)
 library(data.table)
+library(ncdf4)
+library(foreach)
+library(doParallel)
+library(raster)
+library(sf)
+library(exactextractr)
 
+load("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisk_codes/functions_CFRisks.R")
 #Set data directory
 hydroDir<-("D:/tilloal/Documents/LFRuns_utils/data")
 
 #load outf
-
 outf=c()
 for( Nsq in 1:88){
   print(Nsq)
@@ -42,40 +48,13 @@ for( Nsq in 1:88){
     outhybas$outlets=seq((Idstart+1),(Idstart+length(outhybas$outlets)))
     outhybas$outl2=seq((Idstart2+1),(Idstart2+length(outhybas$outlets)))
     outhybas$latlong=paste(round(outhybas$Var1,4),round(outhybas$Var2,4),sep=" ")
-    #outcut=which(!is.na(match(outhybas$outlets,parlist$catchment)))
-    # zebi=seq(parlist$catchment[1],parlist$catchment[length(parlist$catchment)])
-    # outcut=which(!is.na(match(outhybas$outlets,zebi)))
     outhloc=outhybas
     outf=rbind(outf,outhloc)
   }
 }
 
-#Load my shapefile on which to aggregate
-
-
-
-### HydroRegions ----
-
-# GridHR=raster( paste0(hydroDir,"/HydroRegions_raster_WGS84.tif"))
-# GHR=as.data.frame(GridHR,xy=T)
-# GHR=GHR[which(!is.na(GHR[,3])),]
-# GHR$llcoord=paste(round(GHR$x,4),round(GHR$y,4),sep=" ") 
-# GHR_riv=inner_join(GHR,outf,by= c("llcoord"="latlong"))
-# GHshpp <- read_sf(dsn ="Z:/ClimateRun4/nahaUsers/tilloal/HydroRegions/her_all_adjusted.shp")
-# HydroRsf=fortify(GHshpp) 
-
 
 ### NUTS3 ----
-
-
-NUTS3 <- read_sf(dsn = paste0(hydroDir,"/Countries/NUTS3/NUTS3_Extended_domain.shp"))
-NUTS3$N3ID=c(1:length(NUTS3$NUTS_ID))
-N2ID=unique(NUTS3$NUTS2_ID)
-N2IDn=c(1:length(N2ID))
-mati=match(NUTS3$NUTS2_ID,N2ID)
-NUTS3$N2ID=N2IDn[mati]
-#st_write(NUTS3, paste0(hydroDir,"/Countries/NUTS3/NUTS3_modified.shp"), driver = "ESRI Shapefile")
-
 NUTS3 <- read_sf(dsn = paste0(hydroDir,"/Countries/NUTS3/NUTS3_modified.shp"))
 GridNUTS3=raster( paste0(hydroDir,"/Countries/NUTS3/NUTS3_Raster3ID.tif"))
 GN3=as.data.frame(GridNUTS3,xy=T)
@@ -90,11 +69,8 @@ GN2$llcoord=paste(round(GN2$x,4),round(GN2$y,4),sep=" ")
 GN2_riv=right_join(GN2,outf,by= c("llcoord"="latlong"))
 
 GNF=right_join(GN3,GN2_riv,by="llcoord")
-
 GNUTS3sf=fortify(NUTS3)
-
 GNFx=GNF[which(is.na(GNF$NUTS3_Raster3ID)),]
-
 
 
 #load UpArea
@@ -108,39 +84,7 @@ UpArea=UpAopen(valid_path,outletname,outf)
 head(UpArea)
 
 
-
-palet2=c(hcl.colors(9, palette = "Blues", alpha = NULL, rev = TRUE, fixup = TRUE))
-outletname="efas_rnet_100km_01min"
-outll=outletopen(hydroDir,outletname)
-cord.dec=outll[,c(2,3)]
-cord.dec = SpatialPoints(cord.dec, proj4string=CRS("+proj=longlat"))
-cord.UTM <- spTransform(cord.dec, CRS("+init=epsg:3035"))
-nco=cord.UTM@coords
-world <- ne_countries(scale = "medium", returnclass = "sf")
-Europe <- world[which(world$continent == "Europe"),]
-e2=st_transform(Europe,  crs=3035)
-w2=st_transform(world,  crs=3035)
-tsize=12
-osize=12
-Impdates=seq(1950,2020,by=10)
-valuenames=paste0("Y",Impdates)
-catmap=cst7
-basemap=w2
-
-
-#load data to be aggregated
-
-#Discharge data from HERA
-
-#load yearly file
-
-# Install and load the ncdf4 package
-library(ncdf4)
-library(foreach)
-library(doParallel)
-library(raster)
-library(sf)
-library(exactextractr)
+#Parallel computing for aggregation ----
 
 # Register parallel backend to use multiple cores
 no_cores <- detectCores() - 1 # Leave one core free
@@ -148,12 +92,10 @@ cl <- makeCluster(no_cores)
 registerDoParallel(cl)
 
 yseq=seq(1980,2020)
-# yseq=seq(1980,1985)
 NUTQspT=c()
-
-
 lnut=length(NUTS3$NUTS_ID)
-# 
+
+
 results <- foreach(year = yseq, .packages = c("dplyr","ncdf4", "raster", "exactextractr", "sf")) %dopar%
 {
   
@@ -170,11 +112,9 @@ results <- foreach(year = yseq, .packages = c("dplyr","ncdf4", "raster", "exacte
   time <- ncvar_get(nc,"time")
   lt=length(time)
   
-  
   # Extract the longitude and latitude values
   lon <- ncvar_get(nc, "lon")
   lat <- ncvar_get(nc, "lat")
-  
   outll=expand.grid(lon,lat)
   
   first_day <- ncvar_get(nc, namev, 
@@ -229,7 +169,7 @@ results <- foreach(year = yseq, .packages = c("dplyr","ncdf4", "raster", "exacte
     NUTQsp[c((1+(t-1)*lnut):(t*lnut)),]=NUTsave
   }
   
-  file_name <- paste0("/NUTSQ/NUTS3x_", year, ".csv")
+  file_name <- paste0("/NUTSQ/NUTS3xx_", year, ".csv")
   write.csv(NUTQsp,file=paste0(hydroDir,file_name))
   
   #NUTQspT=rbind(NUTQspT,NUTQsp)
@@ -239,31 +179,7 @@ results <- foreach(year = yseq, .packages = c("dplyr","ncdf4", "raster", "exacte
 
 stopCluster(cl)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-year=1982
+#
 
 for (year in yseq)
 {
