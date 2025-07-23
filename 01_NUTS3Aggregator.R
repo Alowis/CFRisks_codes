@@ -1,34 +1,7 @@
-#Library calling
-suppressWarnings(suppressMessages(library(ncdf4)))
-suppressWarnings(suppressMessages(library(sf)))
-suppressWarnings(suppressMessages(library(rnaturalearth)))
-suppressWarnings(suppressMessages(library(rnaturalearthdata)))
-suppressWarnings(suppressMessages(library(rgeos)))
-suppressWarnings(suppressMessages(library(dplyr)))
-library(Kendall)
-library(biscale)
-library(cowplot)
-library(ggpubr)
-library(ggridges)
-library(ggplot2)
-library(viridis)
-library(hrbrthemes)
-library(tidyverse)
-library(raster)
-library(modifiedmk)
-library(ks)
-library(pracma)
-library(data.table)
-library(ncdf4)
-library(foreach)
-library(doParallel)
-library(raster)
-library(sf)
-library(exactextractr)
 
-load("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisk_codes/functions_CFRisks.R")
+source("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisk_codes/functions_CFRisks.R")
 #Set data directory
-hydroDir<-("D:/tilloal/Documents/LFRuns_utils/data")
+hydroDir<-("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisk_data/")
 
 #load outf
 outf=c()
@@ -55,14 +28,14 @@ for( Nsq in 1:88){
 
 
 ### NUTS3 ----
-NUTS3 <- read_sf(dsn = paste0(hydroDir,"/Countries/NUTS3/NUTS3_modified.shp"))
-GridNUTS3=raster( paste0(hydroDir,"/Countries/NUTS3/NUTS3_Raster3ID.tif"))
+NUTS3 <- read_sf(dsn = paste0(hydroDir,"NUTS3/NUTS3_modified.shp"))
+GridNUTS3=raster( paste0(hydroDir,"NUTS3/NUTS3_Raster3ID.tif"))
 GN3=as.data.frame(GridNUTS3,xy=T)
 GN3=GN3[which(!is.na(GN3[,3])),]
 GN3$llcoord=paste(round(GN3$x,4),round(GN3$y,4),sep=" ")
 GN3_riv=right_join(GN3,outf,by= c("llcoord"="latlong"))
 
-GridNUTS2=raster( paste0(hydroDir,"/Countries/NUTS3/NUTS3_Raster2ID.tif"))
+GridNUTS2=raster( paste0(hydroDir,"NUTS3/NUTS3_Raster2ID.tif"))
 GN2=as.data.frame(GridNUTS2,xy=T)
 GN2=GN2[which(!is.na(GN2[,3])),]
 GN2$llcoord=paste(round(GN2$x,4),round(GN2$y,4),sep=" ")
@@ -75,10 +48,8 @@ GNFx=GNF[which(is.na(GNF$NUTS3_Raster3ID)),]
 
 #load UpArea
 #load upstream area
-main_path = 'D:/tilloal/Documents/06_Floodrivers/'
-valid_path = paste0(main_path,'DataPaper/')
-outletname="/GIS/upArea_European_01min.nc"
-dir=valid_path
+outletname="upArea_European_01min.nc"
+dir=hydroDir
 outf$idlalo=paste(outf$idlo, outf$idla, sep=" ")
 UpArea=UpAopen(valid_path,outletname,outf)
 head(UpArea)
@@ -94,14 +65,14 @@ registerDoParallel(cl)
 yseq=seq(1980,2020)
 NUTQspT=c()
 lnut=length(NUTS3$NUTS_ID)
-
+datafolder="D:/tilloal/Documents/06_Floodrivers"
 
 results <- foreach(year = yseq, .packages = c("dplyr","ncdf4", "raster", "exactextractr", "sf")) %dopar%
 {
   
   # Open the NetCDF file
   print(year)
-  nc <- nc_open(paste0("D:/tilloal/Documents/06_Floodrivers/HERA/dis.HERA_",year,".nc"))
+  nc <- nc_open(paste0(datafolder,"/HERA2/dis.HERA2_",year,".nc"))
   
   # Extract the dimensions of the file
   lon_dim <- nc$dim[["lon"]]
@@ -185,7 +156,7 @@ for (year in yseq)
 {
   # Open the NetCDF file
   print(year)
-  nc <- nc_open(paste0("D:/tilloal/Documents/06_Floodrivers/HERA/dis.HERA_",year,".nc"))
+  nc <- nc_open(paste0(datafolder,"/HERA2/dis.HERA2_",year,".nc"))
   
   # Extract the dimensions of the file
   lon_dim <- nc$dim[["lon"]]
@@ -280,8 +251,6 @@ for (year in yseq)
 
 
 NID=NUTS3$NUTS_ID
-
-
 qplot=NUTQsp[which(NUTQsp$NUTS_ID==NID[400]),]
 
 plot(time,qplot$mean_NUTS3)
@@ -289,16 +258,6 @@ plot(time,qplot$mean_NUTS3)
 # Close the NetCDF file
 nc_close(nc)
 
-# Print the first day
-print(first_day)
-
-
-
-
-#extract one day
-#conver to raster
-#aggregate by NUTS region
-#repeat
 
 
 
