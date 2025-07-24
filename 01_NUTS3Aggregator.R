@@ -1,7 +1,7 @@
 
 source("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisk_codes/functions_CFRisks.R")
 #Set data directory
-hydroDir<-("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisk_data/")
+hydroDir<-("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisks_data/")
 
 #load outf
 outf=c()
