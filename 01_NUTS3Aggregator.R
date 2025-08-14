@@ -51,7 +51,7 @@ GNFx=GNF[which(is.na(GNF$NUTS3_Raster3ID)),]
 outletname="upArea_European_01min.nc"
 dir=hydroDir
 outf$idlalo=paste(outf$idlo, outf$idla, sep=" ")
-UpArea=UpAopen(valid_path,outletname,outf)
+UpArea=UpAopen(hydroDir,outletname,outf)
 head(UpArea)
 
 

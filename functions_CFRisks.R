@@ -1,272 +1,37 @@
-#Library importation
-suppressWarnings(suppressMessages(library(ncdf4)))
-suppressWarnings(suppressMessages(library(sf)))
-suppressWarnings(suppressMessages(library(rnaturalearth)))
-suppressWarnings(suppressMessages(library(rnaturalearthdata)))
-suppressWarnings(suppressMessages(library(rgeos)))
-suppressWarnings(suppressMessages(library(dplyr)))
-library(Kendall)
-library(biscale)
-library(cowplot)
-library(ggpubr)
-library(ggridges)
-library(ggplot2)
-library(viridis)
-library(hrbrthemes)
-library(tidyverse)
-library(raster)
-library(modifiedmk)
-library(ks)
-library(pracma)
-library(data.table)
-library(ncdf4)
-library(foreach)
-library(doParallel)
-library(raster)
-library(sf)
-library(exactextractr)
+# Library calling ----
+required_packages <- c(
+  # Spatial and data handling
+  "ncdf4", "sf", "rnaturalearth", "rnaturalearthdata", "rgeos", "raster",
+  
+  # Data manipulation
+  "dplyr", "tidyverse", "data.table", "lubridate", "zoo", "xts", "tsibble", "fs",
+  
+  # Statistical analysis
+  "Kendall", "biscale", "ks", "pracma", "modifiedmk", "RtsEva", "evd", "POT",
+  
+  # Visualization
+  "ggplot2", "viridis", "hrbrthemes", "cowplot", "ggpubr", "ggridges", "ggnewscale", "scales","patchwork",
+  
+  # Performance and utilities
+  "foreach", "doParallel", "matrixStats"
+)
 
-#Library calling
-suppressWarnings(suppressMessages(library(ncdf4)))
-suppressWarnings(suppressMessages(library(sf)))
-suppressWarnings(suppressMessages(library(rnaturalearth)))
-suppressWarnings(suppressMessages(library(rnaturalearthdata)))
-suppressWarnings(suppressMessages(library(rgeos)))
-suppressWarnings(suppressMessages(library(dplyr)))
-library(Kendall)
-library(biscale)
-library(cowplot)
-library(ggpubr)
-library(ggridges)
-library(ggplot2)
-library(viridis)
-library(hrbrthemes)
-library(tidyverse)
-library(raster)
-library(modifiedmk)
-library(ks)
-library(pracma)
-library(data.table)
-library(RtsEva)
-library(xts)
-library(regions)
 
-mean_daily_value <- function(timeseries) {
-  # Convert the 6-hourly time series to daily time series
-  daily_timeseries <- apply.daily(timeseries, mean)
-  tday=unique(as.Date(as.character(timeseries[,1])))
-  return(data.frame(date=tday,Qmd=daily_timeseries))
+# Install packages if missing and load them
+for (pkg in required_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    suppressMessages(install.packages(pkg))
+  }
+  if (!(pkg %in% .packages())) {
+    suppressPackageStartupMessages(suppressWarnings(suppressMessages(library(pkg, character.only = TRUE))))
+  }
 }
 
-get_POTdata_high <- function(pcts, ms) {
-  
-  # Calculate the threshold using the specified percentile
-  thrsd <- quantile(ms[, 2], pcts / 100)
-  
-  # Find peaks using the pracma package
-  pks_and_locs <- pracma::findpeaks(ms[, 2], minpeakdistance = 7, minpeakheight = thrsd)
-  
-  # Extract relevant peak information
-  pks <- pks_and_locs[, 1]  # Peak values
-  locs <- pks_and_locs[, 2] # Indexes of peaks
-  st <- pks_and_locs[, 3]   # Start indexes of peaks
-  end <- pks_and_locs[, 4]  # End indexes of peaks
-  dur <- end-st
-  
-  f <- ecdf(ms[,2])
-  pkq=round(f(pks),5)
-  
-  # Create the data frame directly with the extracted data
-  POTdata_df <- data.frame(
-    threshold = thrsd,         # Same threshold value for all rows
-    percentile = pcts,         # Same percentile value for all rows
-    peaks = pkq,               # Peak values
-    stpeaks = st,              # Start index of each peak
-    endpeaks = end,            # End index of each peak
-    ipeaks = locs,             # Peak locations (indexes)
-    time = ms[locs, 1],         # Corresponding time for each peak
-    duration = dur
-  )
-  
-  # Return the resulting data frame
-  return(POTdata_df)
-}
 
-get_POTdata_sliding_low <- function(pcts, ms) {
-  
-  # Convert the time column (ms[, 1]) to Date objects if they are not already
-  ms[, 1] <- as.Date(ms[, 1], origin = "1970-01-01")
-  
-  # Extract the day of the year (DOY) for each date
-  doy <- as.numeric(format(ms[, 1], "%j"))  # %j gives the day of the year (1-366)
-  
-  # Initialize a vector to store thresholds for each day of the year (1 to 366)
-  thresholds <- numeric(366)
-  
-  # Compute the threshold for each day of the year using a 30-day sliding window (±15 days)
-  for (d in 1:366) {
-    # Define a window around the current day (±15 days)
-    window_days <- c((d - 15):(d + 15)) %% 366  # Wrap around at the end of the year
-    window_days[window_days == 0] <- 366  # Correct for modulus result of 0
-    
-    # Get all data points that fall within this window
-    window_data <- ms[doy %in% window_days, 2]
-    
-    # Calculate the threshold for this day using the specified percentile
-    if (length(window_data) > 1) {
-      thresholds[d] <- quantile(window_data, pcts / 100)
-    } else {
-      thresholds[d] <- NA  # If insufficient data, set threshold to NA
-    }
-  }
-  
-  # Create a data frame of thresholds for each timestep in ms
-  threshold_df <- data.frame(
-    time = ms[, 1],  # Time from the input data
-    threshold = thresholds[doy],  # Use the thresholds corresponding to the day of the year for each point in time
-    measurement = ms[, 2]  # The original measurements
-  )
-  
-  #smoothing of the threshold
-  threshold_df$threshold=tsEvaNanRunningMean(threshold_df$threshold,30)
-  thresholds= threshold_df$threshold[c(1:366)]
-  
-  # Initialize a list to store low peak regions
-  low_peak_clusters <- list()
-  
-  # Variables to track cluster start and end
-  in_cluster <- FALSE
-  cluster_start <- NULL
-  cluster_end <- NULL
-  
-  # Loop over the data to detect low peak clusters
-  for (i in seq_len(nrow(ms))) {
-    # Get the day of the year for the current data point
-    current_doy <- doy[i]
-    
-    # Get the threshold for this day
-    thrsd <- thresholds[current_doy]
-    
-    # Skip if the threshold is NA (insufficient data)
-    if (is.na(thrsd)) next
-    
-    # Check if the current value is below the dynamic threshold
-    if (ms[i, 2] < thrsd) {
-      if (!in_cluster) {
-        # Start of a new cluster
-        in_cluster <- TRUE
-        cluster_start <- i
-      }
-      # Continuously update the cluster end as long as we're below the threshold
-      cluster_end <- i
-    } else {
-      # If we're exiting a low region and were in a cluster, close it
-      if (in_cluster) {
-        in_cluster <- FALSE
-        low_peak_clusters[[length(low_peak_clusters) + 1]] <- c(cluster_start, cluster_end)
-        cluster_start <- NULL
-        cluster_end <- NULL
-      }
-    }
-  }
-  
-  # Handle any remaining cluster at the end of the loop
-  if (in_cluster) {
-    low_peak_clusters[[length(low_peak_clusters) + 1]] <- c(cluster_start, cluster_end)
-  }
-  
-  # Now merge clusters if they are too close (< 30 days apart) and count the number of merged subclusters
-  merged_clusters <- list()
-  merged_subclusters <- list()
-  
-  if (length(low_peak_clusters) > 1) {
-    current_cluster <- low_peak_clusters[[1]]
-    merge_count <- 1  # Start with 1 subcluster
-    
-    for (j in 2:length(low_peak_clusters)) {
-      next_cluster <- low_peak_clusters[[j]]
-      
-      # Check if the next cluster is within 30 days of the current one
-      if (ms[next_cluster[1], 1] - ms[current_cluster[2], 1] <= 30) {
-        # Merge the clusters by extending the current cluster's end
-        current_cluster[2] <- next_cluster[2]
-        merge_count <- merge_count + 1  # Count this as a merged subcluster
-      } else {
-        # No merge, store the current cluster and move to the next one
-        merged_clusters[[length(merged_clusters) + 1]] <- current_cluster
-        merged_subclusters[[length(merged_subclusters) + 1]] <- merge_count
-        
-        # Reset for the next cluster
-        current_cluster <- next_cluster
-        merge_count <- 1  # Reset merge count for the new cluster
-      }
-    }
-    # Add the last cluster
-    merged_clusters[[length(merged_clusters) + 1]] <- current_cluster
-    merged_subclusters[[length(merged_subclusters) + 1]] <- merge_count
-  } else {
-    merged_clusters <- low_peak_clusters
-    merged_subclusters <- rep(1, length(low_peak_clusters))  # No merging, each cluster is 1 subcluster
-  }
-  
-  # Prepare the final data frame to store the low peak clusters
-  if (length(merged_clusters) > 0) {
-    POTdata_df <- data.frame(
-      threshold = numeric(),
-      percentile = numeric(),
-      low_peaks = numeric(),
-      stpeaks = numeric(),
-      endpeaks = numeric(),
-      ipeaks = numeric(),
-      time = as.Date(character()),
-      cluster_length = numeric(),  # Length of the cluster in days
-      merged_subclusters = numeric()  # Number of merged subclusters
-    )
-    
-    # Populate the data frame with the merged low peak clusters
-    for (k in seq_along(merged_clusters)) {
-      cluster <- merged_clusters[[k]]
-      start_idx <- cluster[1]
-      end_idx <- cluster[2]
-      ipeaks <- which.min(ms[start_idx:end_idx, 2]) + start_idx - 1  # Index of minimum in the cluster
-      cluster_length <- as.numeric(ms[end_idx, 1] - ms[start_idx, 1]) + 1  # Length of the cluster
-      tw=seq(ms[ipeaks, 1]-15,ms[ipeaks, 1]+15,by="days")
-      dotw <- as.numeric(format(tw, "%j")) 
-      subset <- ms[which(!is.na(match(doy,dotw))),2]
-      f <- ecdf(subset)
-      pkf=f(subset)
-      pkq=round(f(ms[ipeaks, 2]),5)
-      
-      POTdata_df <- rbind(POTdata_df, data.frame(
-        threshold = thresholds[doy[ipeaks]],
-        percentile = pcts,
-        low_peaks = pkq,  # The lowest point in the cluster
-        stpeaks = ms[start_idx, 1],  # Start date of the cluster
-        endpeaks = ms[end_idx, 1],   # End date of the cluster
-        ipeaks = ipeaks,             # Index of the lowest point in the cluster
-        time = ms[ipeaks, 1],        # Time of the lowest point in the cluster
-        cluster_length = cluster_length,  # Length of the cluster in days
-        merged_subclusters = merged_subclusters[[k]]  # Number of merged subclusters
-      ))
-    }
-  } else {
-    POTdata_df <- data.frame(
-      threshold = numeric(),
-      percentile = numeric(),
-      low_peaks = numeric(),
-      stpeaks = numeric(),
-      endpeaks = numeric(),
-      ipeaks = numeric(),
-      time = as.Date(character()),
-      cluster_length = numeric(),
-      merged_subclusters = numeric()
-    )
-  }
-  
-  # Return both the low peak clusters and the threshold data frame
-  return(list(low_peaks_df = POTdata_df, threshold_df = threshold_df))
-}
 
+# 1. Functions to open files -----
+
+#Open netcdf outlet files
 outletopen=function(dir,outletname,nrspace=rep(NA,5)){
   ncbassin=paste0(dir,"/",outletname,".nc")
   ncb=nc_open(ncbassin)
@@ -304,6 +69,7 @@ outletopen=function(dir,outletname,nrspace=rep(NA,5)){
   return (outll)
 }
 
+#Open upstream area file for selected pixels
 UpAopen=function(dir,outletname,Sloc_final){
   ncbassin=paste0(dir,outletname)
   ncb=nc_open(ncbassin)
@@ -340,116 +106,7 @@ UpAopen=function(dir,outletname,Sloc_final){
   return (outfinal)
 }
 
-ReservoirOpen=function(dir,outletname,Sloc_final){
-  ncbassin=paste0(dir,outletname)
-  ncb=nc_open(ncbassin)
-  name.vb=names(ncb[['var']])
-  namev=name.vb[1]
-  #time <- ncvar_get(ncb,"time")
-  
-  #timestamp corretion
-  name.lon="lon"
-  name.lat="lat"
-  londat = ncvar_get(ncb,name.lon) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat)
-  lla=length(latdat)
-  start=c(1,1)
-  count=c(llo,lla)
-  
-  
-  londat = ncvar_get(ncb,name.lon,start=start[1],count=count[1]) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat,start=start[2],count=count[2])
-  lla=length(latdat)
-  outlets = ncvar_get(ncb,namev,start = start, count= count) 
-  outlets=as.vector(outlets)/1000000
-  outll=expand.grid(londat,latdat)
-  lonlatloop=expand.grid(c(1:llo),c(1:lla))
-  outll$upa=outlets
-  outll$idlo=lonlatloop$Var1
-  outll$idla=lonlatloop$Var2
-  
-  #outll$idlalo=paste(outll$idlo,outll$idla,sep=" ")
-  outll$latlong=paste(round(outll$Var1,4),round(outll$Var2,4),sep=" ")
-  outfinal=inner_join(outll, Sloc_final, by="latlong")
-  return (outfinal)
-}
-
-#Functions
-outletopen=function(dir,outletname,nrspace=rep(NA,5)){
-  ncbassin=paste0(dir,"/",outletname,".nc")
-  ncb=nc_open(ncbassin)
-  name.vb=names(ncb[['var']])
-  namev=name.vb[1]
-  if ("Band1"%in% name.vb)namev="Band1"
-  name.lon="lon"
-  name.lat="lat"
-  if (!is.na(nrspace[1])){
-    start=as.numeric(nrspace[c(2,4)])
-    count=as.numeric(nrspace[c(3,5)])-start+1
-  }else{
-    londat = ncvar_get(ncb,name.lon) 
-    llo=length(londat)
-    latdat = ncvar_get(ncb,name.lat)
-    lla=length(latdat)
-    start=c(1,1)
-    count=c(llo,lla)
-  }
-  
-  londat = ncvar_get(ncb,name.lon,start=start[1],count=count[1]) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat,start=start[2],count=count[2])
-  lla=length(latdat)
-  outlets = ncvar_get(ncb,namev,start = start, count= count) 
-  outlets=as.vector(outlets)
-  outll=expand.grid(londat,latdat)
-  lonlatloop=expand.grid(c(1:llo),c(1:lla))
-  outll$idlo=lonlatloop$Var1
-  outll$idla=lonlatloop$Var2
-  
-  outll=outll[which(!is.na(outlets)),]
-  outlets=outlets[which(!is.na(outlets))]
-  outll=data.frame(outlets,outll)
-  return (outll)
-}
-
-UpAopen=function(dir,outletname,Sloc_final){
-  ncbassin=paste0(dir,outletname)
-  ncb=nc_open(ncbassin)
-  name.vb=names(ncb[['var']])
-  namev=name.vb[2]
-  #time <- ncvar_get(ncb,"time")
-  
-  #timestamp corretion
-  name.lon="lon"
-  name.lat="lat"
-  londat = ncvar_get(ncb,name.lon) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat)
-  lla=length(latdat)
-  start=c(1,1)
-  count=c(llo,lla)
-  
-  
-  londat = ncvar_get(ncb,name.lon,start=start[1],count=count[1]) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat,start=start[2],count=count[2])
-  lla=length(latdat)
-  outlets = ncvar_get(ncb,namev,start = start, count= count) 
-  outlets=as.vector(outlets)/1000000
-  outll=expand.grid(londat,latdat)
-  lonlatloop=expand.grid(c(1:llo),c(1:lla))
-  outll$upa=outlets
-  outll$idlo=lonlatloop$Var1
-  outll$idla=lonlatloop$Var2
-  
-  #outll$idlalo=paste(outll$idlo,outll$idla,sep=" ")
-  outll$latlong=paste(round(outll$Var1,4),round(outll$Var2,4),sep=" ")
-  outfinal=inner_join(outll, Sloc_final, by="latlong")
-  return (outfinal)
-}
-
+#Open reservoir location file
 ReservoirOpen=function(dir,outletname,Sloc_final){
   ncbassin=paste0(dir,outletname)
   ncb=nc_open(ncbassin)
@@ -487,9 +144,9 @@ ReservoirOpen=function(dir,outletname,Sloc_final){
 }
 
 
+# 2. Timeseries analysis functions ----
 
-#Functions declaration -----
-
+#Extract mean daily values out of subdaily timeseries
 mean_daily_value <- function(timeseries) {
   # Convert the 6-hourly time series to daily time series
   daily_timeseries <- apply.daily(timeseries, mean)
@@ -497,6 +154,7 @@ mean_daily_value <- function(timeseries) {
   return(data.frame(date=tday,Qmd=daily_timeseries))
 }
 
+#Extract extreme high peaks other a constant threshold
 get_POTdata_high <- function(pcts, ms) {
   
   # Calculate the threshold using the specified percentile
@@ -528,6 +186,7 @@ get_POTdata_high <- function(pcts, ms) {
   return(POTdata_df)
 }
 
+#Extract extreme low values below a 30-day centered threshold
 get_POTdata_sliding_low <- function(pcts, ms) {
   
   # Convert the time column (ms[, 1]) to Date objects if they are not already
@@ -697,115 +356,6 @@ get_POTdata_sliding_low <- function(pcts, ms) {
   return(list(low_peaks_df = POTdata_df, threshold_df = threshold_df))
 }
 
-outletopen=function(dir,outletname,nrspace=rep(NA,5)){
-  ncbassin=paste0(dir,"/",outletname,".nc")
-  ncb=nc_open(ncbassin)
-  name.vb=names(ncb[['var']])
-  namev=name.vb[1]
-  if ("Band1"%in% name.vb)namev="Band1"
-  name.lon="lon"
-  name.lat="lat"
-  if (!is.na(nrspace[1])){
-    start=as.numeric(nrspace[c(2,4)])
-    count=as.numeric(nrspace[c(3,5)])-start+1
-  }else{
-    londat = ncvar_get(ncb,name.lon) 
-    llo=length(londat)
-    latdat = ncvar_get(ncb,name.lat)
-    lla=length(latdat)
-    start=c(1,1)
-    count=c(llo,lla)
-  }
-  
-  londat = ncvar_get(ncb,name.lon,start=start[1],count=count[1]) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat,start=start[2],count=count[2])
-  lla=length(latdat)
-  outlets = ncvar_get(ncb,namev,start = start, count= count) 
-  outlets=as.vector(outlets)
-  outll=expand.grid(londat,latdat)
-  lonlatloop=expand.grid(c(1:llo),c(1:lla))
-  outll$idlo=lonlatloop$Var1
-  outll$idla=lonlatloop$Var2
-  
-  outll=outll[which(!is.na(outlets)),]
-  outlets=outlets[which(!is.na(outlets))]
-  outll=data.frame(outlets,outll)
-  return (outll)
-}
-
-UpAopen=function(dir,outletname,Sloc_final){
-  ncbassin=paste0(dir,outletname)
-  ncb=nc_open(ncbassin)
-  name.vb=names(ncb[['var']])
-  namev=name.vb[2]
-  #time <- ncvar_get(ncb,"time")
-  
-  #timestamp corretion
-  name.lon="lon"
-  name.lat="lat"
-  londat = ncvar_get(ncb,name.lon) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat)
-  lla=length(latdat)
-  start=c(1,1)
-  count=c(llo,lla)
-  
-  
-  londat = ncvar_get(ncb,name.lon,start=start[1],count=count[1]) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat,start=start[2],count=count[2])
-  lla=length(latdat)
-  outlets = ncvar_get(ncb,namev,start = start, count= count) 
-  outlets=as.vector(outlets)/1000000
-  outll=expand.grid(londat,latdat)
-  lonlatloop=expand.grid(c(1:llo),c(1:lla))
-  outll$upa=outlets
-  outll$idlo=lonlatloop$Var1
-  outll$idla=lonlatloop$Var2
-  
-  #outll$idlalo=paste(outll$idlo,outll$idla,sep=" ")
-  outll$latlong=paste(round(outll$Var1,4),round(outll$Var2,4),sep=" ")
-  outfinal=inner_join(outll, Sloc_final, by="latlong")
-  return (outfinal)
-}
-
-ReservoirOpen=function(dir,outletname,Sloc_final){
-  ncbassin=paste0(dir,outletname)
-  ncb=nc_open(ncbassin)
-  name.vb=names(ncb[['var']])
-  namev=name.vb[1]
-  #time <- ncvar_get(ncb,"time")
-  
-  #timestamp corretion
-  name.lon="lon"
-  name.lat="lat"
-  londat = ncvar_get(ncb,name.lon) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat)
-  lla=length(latdat)
-  start=c(1,1)
-  count=c(llo,lla)
-  
-  
-  londat = ncvar_get(ncb,name.lon,start=start[1],count=count[1]) 
-  llo=length(londat)
-  latdat = ncvar_get(ncb,name.lat,start=start[2],count=count[2])
-  lla=length(latdat)
-  outlets = ncvar_get(ncb,namev,start = start, count= count) 
-  outlets=as.vector(outlets)/1000000
-  outll=expand.grid(londat,latdat)
-  lonlatloop=expand.grid(c(1:llo),c(1:lla))
-  outll$upa=outlets
-  outll$idlo=lonlatloop$Var1
-  outll$idla=lonlatloop$Var2
-  
-  #outll$idlalo=paste(outll$idlo,outll$idla,sep=" ")
-  outll$latlong=paste(round(outll$Var1,4),round(outll$Var2,4),sep=" ")
-  outfinal=inner_join(outll, Sloc_final, by="latlong")
-  return (outfinal)
-}
-
 #Season computation functions
 seasony=function(x){
   theta=x*(2*pi/365.25)
@@ -864,6 +414,8 @@ season2=function(x){
   return(R)
 }
 
+
+# 3. Other functions ----
 direction_labeller <- function(x){
   ifelse(x %% 30.5 == 0, c('Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct',"Nov",'Dec')[1+(as.integer(x/30.5) %% 12)], '')
 }
@@ -877,28 +429,24 @@ elbow_finder <- function(x_values, y_values) {
   max_df <- data.frame(x = c(max_y_x, max_x_x), y = c(max_y_y, max_x_y))
   
   # Creating straight line between the max values
-  sl=approx(max_df$y, max_df$x,n=15)
+  sl=approx(max_df$y, max_df$x,n=16)
   
   xcurve=sl$y/max(sl$y)
   ycurve=sl$x/max(sl$x)
   x_values2=x_values/max(x_values)
   y_values2=y_values/max(y_values)
-  plot(xcurve,ycurve)
-  lines(x_values2,y_values2,col=2)
   # Distance from point to line
   x_min_dist<-c()
   y_min_dist<-c()
   distances <- c()
   for(i in 1:length(x_values)) {
     distancex<-c()
-    for(j in 1:length(x_values)){
+    for(j in 1:length(xcurve)){
       #distancex <- c(distancex, abs(coef(fit)[2]*x_values[j] - y_values[i] + coef(fit)[1]) / sqrt(coef(fit)[2]^2 + 1^2))
-      print(sqrt((x_values2[i]-xcurve[j])^2+(y_values2[i]-ycurve[j])^2))
+      #print(sqrt((x_values2[i]-xcurve[j])^2+(y_values2[i]-ycurve[j])^2))
       distancex<-c(distancex,sqrt((x_values2[i]-xcurve[j])^2+(y_values2[i]-ycurve[j])^2))
     }
-    plot(distancex)
     distances<-c(distances,min(distancex, na.rm=T))
-    print(which.min(distancex))
     x_min_dist <- c(x_min_dist,xcurve[which.min(distancex)])
     y_min_dist <- c(y_min_dist,ycurve[which.min(distancex)])
   }
@@ -908,10 +456,6 @@ elbow_finder <- function(x_values, y_values) {
   y_max_dist <- y_values[which.max(distances)]
   xcmax <- x_min_dist[which.max(distances)]
   ycmax <- y_min_dist[which.max(distances)]
-  
-  
-  poncu<-c()
-  plot(x_values,distances)
   
   return(c(x_max_dist, y_max_dist,xcmax,ycmax))
 }
@@ -936,4 +480,124 @@ calculate_proportions <- function(df, percentiles, damage_percentiles) {
   
   return(proportions)
 }
+
+
+process_floods <- function(events_df, reference_df, event_idx, window, nut_id,
+                           endpeaks_col = "enddate", stpeaks_col = "stdate",
+                           start_date_col = "Start.date", end_date_col = "End.date",
+                           id_col = "ï..ID") {
+  print(haz)
+  # Calculate date differences
+  
+  #difference between end date of sim and start date of obs
+  d1=(as.Date(High_events$enddate)-as.Date(Hanze_Nut$Start.date[e]))+1
+  #difference between end date of sim and end date of obs
+  d2=(as.Date(High_events$enddate)-as.Date(Hanze_Nut$End.date[e]))+1
+  #difference between start date of sim and end date of obs
+  d3=-((as.Date(Hanze_Nut$End.date[e])-as.Date(High_events$stardate))-1)
+  #difference between start date of sim and start date of obs
+  d4=-((as.Date(Hanze_Nut$Start.date[e])-as.Date(High_events$stardate))-1)
+  
+  #modelled event has to end at most xx days before observed event has started
+  #modelled event has to end at most 30 days after observed event has ended
+  keep1=which(d1>=0 & d2<wflood[1])
+  #modelled event has to start at most xx days after observed event has ended
+  #modelled event has to start at most 30 days before observed event has started
+  keep2=which(d3>=0 & d4<wflood[1])
+
+  keep=unique(c(keep1,keep2))
+  keep=keep3
+  
+  d1 <- as.Date(events_df[[endpeaks_col]]) - as.Date(reference_df[[start_date_col]][event_idx]) + 1
+  d2 <- as.Date(events_df[[stpeaks_col]]) - as.Date(reference_df[[end_date_col]][event_idx]) + 1
+  keep_indices=which(d1>=(-window) & d2<=window)
+  # Determine which events to keep
+  if (haz =="flood"){
+    print("fl")
+    keep_indices <- which(d1 < -4 & d1 > (-window))
+  }
+  else if (haz=="drought"){
+    keep_indices <- which(d2 <= 0 & d1 > (-window))
+  }
+  else if (haz=="heat"){
+    keep_indices <- which(d1 <= 0 & d1 > (-window))
+  }
+  else if (haz=="cold"){
+    keep_indices <- which(d2 <= 0 & d1 > (-window))
+  }
+  else if (haz=="wind"){
+    keep_indices <- which(d2 <= 0 & d1 > (-window))
+  } else{
+    print("invalid hazard")
+  }
+  
+  # Process and append the kept events
+  if (length(keep_indices) > 0) {
+    events_to_keep <- events_df[keep_indices, ]
+    events_to_keep$dtime <- d1[keep_indices]
+    events_to_keep$NUTID <- nut_id
+    events_to_keep$eventStart <- reference_df[[start_date_col]][event_idx]
+    events_to_keep$eventEnd <- reference_df[[end_date_col]][event_idx]
+    events_to_keep$eventID <- reference_df[[id_col]][event_idx]
+    
+    output_df <- events_to_keep
+  } else{
+    output_df=c()
+  }
+  
+  return(output_df)
+}
+
+
+process_events <- function(events_df, reference_df, event_idx, window, nut_id, haz="flood",
+                           endpeaks_col = "enddate", stpeaks_col = "stardate",
+                           start_date_col = "Start.date", end_date_col = "End.date",
+                           id_col = "eid") {
+
+  # Calculate date differences
+  d1 <- as.Date(events_df[[endpeaks_col]]) - as.Date(reference_df[[start_date_col]][event_idx]) + 1
+  d2 <- as.Date(events_df[[stpeaks_col]]) - as.Date(reference_df[[end_date_col]][event_idx]) + 1
+
+  # Determine which events to keep
+  if (haz =="flood"){
+    keep_indices <- which(d1 <= -4 & d1 >= (-window))
+  }
+  else if (haz=="flmatch"){
+    keep_indices <- which(d2 <= window & d1 >= (-window))
+  }
+  else if (haz=="drought"){
+    keep_indices <- which(d2 <= 0 & d1 >= (-window))
+  }
+  else if (haz=="heat"){
+    keep_indices <- which(d1 <= 0 & d1 >= (-window))
+  }
+  else if (haz=="cold"){
+    keep_indices <- which(d2 <= 0 & d1 >= (-window))
+  }
+  else if (haz=="wind"){
+    keep_indices <- which(d2 <= 0 & d1 >= (-window))
+  } else{
+    print("invalid hazard")
+  }
+  
+  # Process and append the kept events
+  if (length(keep_indices) > 0) {
+    events_to_keep <- events_df[keep_indices, ]
+    events_to_keep$dtime1 <- d1[keep_indices]
+    events_to_keep$dtime2 <- d1[keep_indices]
+    events_to_keep$NUTID <- nut_id
+    events_to_keep$eventStart <- reference_df[[start_date_col]][event_idx]
+    events_to_keep$eventEnd <- reference_df[[end_date_col]][event_idx]
+    events_to_keep$eventID <- reference_df[[id_col]][event_idx]
+    
+    output_df <- events_to_keep
+  } else{
+    output_df=c()
+  }
+  
+  return(output_df)
+}
+
+# Example usage:
+# df_POTl_keep <- process_events(Low_events, Hanze_Nut, e, wdrought, NUTl, df_POTl_keep)
 

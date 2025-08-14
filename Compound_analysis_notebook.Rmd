@@ -1,0 +1,1729 @@
+---
+title: 'R Notebook to reproduce outputs displayed in Compounding hazards increase
+  flood economic losses across Europe'
+output:
+  html_notebook: 
+    fig_width: 10
+    fig_caption: true
+  html_document:
+    df_print: paged
+---
+
+# 1. Load inputs and set environment {#sec-}
+
+-   Source function file: `functions_CFRisks.R`
+-   Load NUTS region shapefiles
+-   Load compounding hazards datasets from previous scripts
+
+```{r Load inputs and functions, echo=TRUE, message=FALSE, warning=FALSE}
+source("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisk_codes/functions_CFRisks.R")
+#Set data directory
+hydroDir<-("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisks_data/")
+
+NUTS3 <- read_sf(dsn = paste0(hydroDir,"/NUTS3/NUTS3_modified.shp"))
+GNUTS3sf=fortify(NUTS3)
+#Load old and new NUTS3 region IDs
+NUTS3_2010 <- read_sf(dsn = paste0(hydroDir,"/NUTS3/Regions_v2010_simplified.shp"))
+NUTS3_2021 <- read_sf(dsn = paste0(hydroDir,"/NUTS3/Regions_v2021_simplified.shp"))
+
+####load HANZE event set to do a first matching####
+Hanze_flood=read.csv(file=paste0(hydroDir,"HANZE/HANZE_events.csv"))
+
+#Vector of affected regions for each event
+list_of_word_vectors <- lapply(Hanze_flood$Regions.affected..v2021., function(x) unlist(strsplit(x, ";")))
+vectors_2021=unlist(list_of_word_vectors)
+vectors_2021=unique(vectors_2021)
+list_of_word_vectors2 <- lapply(Hanze_flood$Regions.affected..v2010., function(x) unlist(strsplit(x, ";")))
+vectors_2010=unlist(list_of_word_vectors2)
+vectors_2010=unique(vectors_2010)
+N1021=cbind(vectors_2010,vectors_2021)
+
+#Plot parameters
+palet2=c(hcl.colors(9, palette = "Blues", alpha = NULL, rev = TRUE, fixup = TRUE))
+outletname="efas_rnet_100km_01min"
+outll=outletopen(hydroDir,outletname)
+cord.dec=outll[,c(2,3)]
+cord.dec = SpatialPoints(cord.dec, proj4string=CRS("+proj=longlat"))
+cord.UTM <- spTransform(cord.dec, CRS("+init=epsg:3035"))
+nco=cord.UTM@coords
+world <- ne_countries(scale = "medium", returnclass = "sf")
+Europe <- world[which(world$continent == "Europe"),]
+e2=st_transform(Europe,  crs=3035)
+w2=st_transform(world,  crs=3035)
+tsize=14
+osize=12
+Impdates=seq(1950,2020,by=10)
+valuenames=paste0("Y",Impdates)
+basemap=w2
+
+#Load compounding hazards data
+fl_events=read.csv(file=paste0(hydroDir,"/hazard_data/fl_nuts3_v1.csv"))
+fl_events$enddate=as.POSIXct(fl_events$enddate)
+fl_events$stardate=fl_events$enddate-(fl_events$duration*3600*24)
+dr_events=read.csv(file=paste0(hydroDir,"/hazard_data/dr_nuts3_v1.csv"))
+dr_events$stardate=as.Date(dr_events$stardate, format="%d/%m/%Y")
+dr_events$enddate=as.Date(dr_events$enddate, format="%d/%m/%Y")
+
+hw_events=read.csv(file=paste0(hydroDir,"/hazard_data/hw_nuts3_v1.csv"))
+hw_events$stardate=as.Date(hw_events$stardate, format="%d/%m/%Y")
+hw_events$enddate=as.Date(hw_events$enddate, format="%d/%m/%Y")
+
+cw_events=read.csv(file=paste0(hydroDir,"/hazard_data/cw_nuts3_v1.csv"))
+cw_events$stardate=as.Date(cw_events$stardate, format="%d/%m/%Y")
+cw_events$enddate=as.Date(cw_events$enddate, format="%d/%m/%Y")
+
+ws_events=read.csv(file=paste0(hydroDir,"/hazard_data/wgust_nuts3_995.csv"))
+ws_events$stardate=as.Date(ws_events$stardate, format="%d/%m/%Y")
+ws_events$enddate=as.Date(ws_events$enddate, format="%d/%m/%Y")
+ws_events=ws_events[-which(ws_events$duration<1),]
+ws_events=ws_events[,-5]
+
+#Matching of flood events with associated hazards
+Hanze_flood_1980=Hanze_flood[which(Hanze_flood$Year>1980),]
+Hanze_flood_1980=Hanze_flood_1980[-which(Hanze_flood_1980$Type=="Coastal"),]
+
+NutVector=NUTS3$NUTS_ID
+```
+
+# 2. Detection of optimal window for flood detection with HERA high flows
+
+The Initial loop explores lag from 1 to 15 days prior to flood event and identifies the optimal window to match historical flood events and aggregated river flow peaks at NUTS3 level.
+
+```{r Optimal flood detection window, eval=FALSE}
+initF=T
+if (initF==T){
+  HitF=c()
+  list_POTFl_large<-list()
+  llpot=c()
+  llev=c()
+  for (w in 0:15){
+    wflood=c(w)
+    df_POTFlood_large=c()
+    Hanze_flood_M1=c()
+    for (id in 1:length(NutVector)){
+      NUTl=NutVector[id]
+      High_events=fl_events[which(fl_events$NUT==NUTl),]
+      if (length(High_events$X)>0){
+        High_events=fl_events[which(fl_events$NUT==NUTl),]
+        matches <- lapply(list_of_word_vectors, function(vector) NUTl %in% vector)
+        tm=which(matches==T)
+        Hanze_Nut=Hanze_flood[tm,]
+        Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
+        if(length(Hanze_Nut$Country.code)>0){
+          Hanze_bNut=data.frame(NUTl,Hanze_Nut)
+          Hanze_flood_M1=rbind(Hanze_flood_M1,Hanze_bNut)
+        }
+        #now check overlap with mt detected anomalies
+        df_POTFlood_keep=c()
+        Hanze_Nut$eid=Hanze_Nut$ï..ID
+        for (e in 1:length(Hanze_Nut$ï..ID)){
+          POTh_keep <- process_events(events_df=High_events,
+                                      reference_df=Hanze_Nut , 
+                                      event_idx=e, window=wflood, 
+                                      nut_id=NUTl,haz="flmatch")
+          
+          df_POTFlood_keep=rbind(df_POTFlood_keep,POTh_keep)
+        }
+        df_POTFlood_keep=as.data.frame(df_POTFlood_keep)
+        df_POTFlood_large=rbind(df_POTFlood_large,df_POTFlood_keep)
+        
+      }
+    }
+    
+    Hanze_flood_M1$NEID=paste0(Hanze_flood_M1$ï..ID,Hanze_flood_M1$NUTl)
+  
+    Hanze_DfNUT=aggregate(list(time=df_POTFlood_large$threshold),
+                           by = list(NID=df_POTFlood_large$eventID,
+                                     RID=df_POTFlood_large$NUTID),
+                           FUN = function(x) c(l=length(x)))
+    
+    Hanze_DfNUT$NEID=paste0(Hanze_DfNUT$NID,Hanze_DfNUT$RID)
+    Hanze_DFmNut=inner_join(Hanze_DfNUT,Hanze_flood_M1,by=c("NEID"))
+    lev=length(Hanze_DFmNut$NEID)
+    llev=c(llev,lev)
+    lpot=length(df_POTFlood_large$eventID)
+    llpot=c(llpot,lpot)
+    list_POTFl_large<-c(list_POTFl_large,list(df_POTFlood_large))
+    
+    
+    #Summary of matched flood events
+    Hanze_Dflood=aggregate(list(time=df_POTFlood_large$threshold),
+                           by = list(NID=df_POTFlood_large$eventID),
+                           FUN = function(x) c(l=length(x)))
+    
+    Hanze_DFmatch=inner_join(Hanze_Dflood,Hanze_flood_1980,by=c("NID"="ï..ID"))
+    
+    Hit_tot=(length(Hanze_DFmatch$NID)/length(Hanze_flood_1980$Country.code)*100)
+    
+    Hit_riv=(length(Hanze_DFmatch$NID[which(Hanze_DFmatch$Type=="River")])/length(Hanze_flood_1980$Country.code[which(Hanze_flood_1980$Type=="River")])*100)
+    
+    Hit_flash=(length(Hanze_DFmatch$NID[which(Hanze_DFmatch$Type=="Flash")])/length(Hanze_flood_1980$Country.code[which(Hanze_flood_1980$Type=="Flash")])*100)
+    
+    Hits=c(w,Hit_tot,Hit_riv,Hit_flash)
+    HitF=rbind(HitF,Hits)
+    
+  }
+  x_values=HitF[,1]
+  y_values=HitF[,2]
+  
+  #ratio of new detected events in NUTS over new detected POTs
+  #look for the elbow in the curve that would signify that detected POT after that do not correspond to the event.
+  nvar=diff(llev)/diff(llpot)
+  nvar=c(nvar,0)
+  #invert nvar
+  nvar=1-nvar
+  y_values=nvar
+  optim=elbow_finder(x_values, y_values)
+  
+  # plot(nvar,type="o")
+  # abline(v=optim[1])
+  
+  plot(HitF[,2],type="o",
+  xlab="Lag before and after event", ylab="Hit rate (%)", ylim=c(25,100),
+  main="Optimal lag time for flood event matching")
+  lines(HitF[,3], col=2, type="o")
+  lines(HitF[,4], col=3, type="o")
+  abline(v=optim[1])
+  # Add a legend
+legend("bottomright",  # Position of the legend
+       legend=c("All floods", "Riverine", "Flash"),  # Labels for each series
+       col=c(1, 2, 3),  # Colors matching the lines
+       lty=1,  # Line type (1 = solid)
+       pch=1,  # Point type
+       bty="n")  # No box around the legend
+
+}
+```
+
+Optimal time lag from previous code chunk is 4 days, we then keep only that time lag for the next step.
+
+```{r HANZExHERA_NUTS matching}
+w=4
+wflood=c(w)
+df_POTFlood_large=c()
+Hanze_flood_BN=c()
+list_POTFl_large=c()
+for (id in 1:length(NutVector)){
+  NUTl=NutVector[id]
+  High_events=fl_events[which(fl_events$NUT==NUTl),]
+  if (length(High_events$X)>0){
+    matches <- lapply(list_of_word_vectors, function(vector) NUTl %in% vector)
+    tm=which(matches==T)
+    Hanze_Nut=Hanze_flood[tm,]
+    Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
+    if(length(Hanze_Nut$Country.code)>0){
+      Hanze_bNut=data.frame(NUTl,Hanze_Nut)
+      Hanze_flood_BN=rbind(Hanze_flood_BN,Hanze_bNut)
+    }
+    #now check overlap with mt detected anomalies
+    df_POTFlood_keep=c()
+    Hanze_Nut$eid=Hanze_Nut$ï..ID
+    for (e in 1:length(Hanze_Nut$ï..ID)){
+      POTh_keep <- process_events(events_df=High_events, reference_df=Hanze_Nut, 
+                                    event_idx=e, window=wflood, nut_id=NUTl,haz="flmatch")
+      df_POTFlood_keep=rbind(df_POTFlood_keep,POTh_keep)
+    }
+    df_POTFlood_keep=as.data.frame(df_POTFlood_keep)
+    df_POTFlood_large=rbind(df_POTFlood_large,df_POTFlood_keep)
+    
+  }
+}
+Hanze_flood_BN$NEID=paste0(Hanze_flood_BN$ï..ID,Hanze_flood_BN$NUTl)
+list_POTFl_large<-c(list_POTFl_large,list(df_POTFlood_large))
+
+
+#Summary of matched flood events
+Hanze_Dflood=aggregate(list(time=df_POTFlood_large$threshold),
+                       by = list(NID=df_POTFlood_large$eventID),
+                       FUN = function(x) c(l=length(x)))
+
+Hanze_DFmatch=inner_join(Hanze_Dflood,Hanze_flood_1980,by=c("NID"="ï..ID"))
+Hit_tot=(length(Hanze_DFmatch$NID)/length(Hanze_flood_1980$Country.code)*100)
+Hit_riv=(length(Hanze_DFmatch$NID[which(Hanze_DFmatch$Type=="River")])/length(Hanze_flood_1980$Country.code[which(Hanze_flood_1980$Type=="River")])*100)
+Hit_flash=(length(Hanze_DFmatch$NID[which(Hanze_DFmatch$Type=="Flash")])/length(Hanze_flood_1980$Country.code[which(Hanze_flood_1980$Type=="Flash")])*100)
+df_POTFlood=df_POTFlood_large
+
+
+  #aggregate by region to have a kind of success rate spatially
+  Hanze_SDflood=aggregate(list(he=df_POTFlood$threshold),
+                          by = list(NUT=df_POTFlood$NUT,eid=df_POTFlood$eventID),
+                          FUN = function(x) c(l=length(x)))
+  
+  Hanze_SDflood=aggregate(list(he=Hanze_SDflood$he),
+                          by = list(NUT=Hanze_SDflood$NUT),
+                          FUN = function(x) c(l=length(x)))
+  
+  Hanze_SOflood=aggregate(list(he=Hanze_flood_BN$Year),
+                          by = list(NUT=Hanze_flood_BN$NUTl),
+                          FUN = function(x) c(l=length(x)))
+  
+  Hanze_spRat=full_join(Hanze_SOflood,Hanze_SDflood,by="NUT")
+  Hanze_spRat$succerat=Hanze_spRat$he.y/Hanze_spRat$he.x*100
+  
+  Hanze_spRat=inner_join(Hanze_spRat,GNUTS3sf, by=c("NUT"="NUTS_ID"))
+ 
+  
+  legend="Detection rate (%)"
+  palet=c(hcl.colors(11, palette = "YlGnBu", alpha = NULL, rev = T, fixup = TRUE))
+  ggplot(basemap) +
+    geom_sf(fill="white",color="darkgrey",size=0.5)+
+    geom_sf(data=Hanze_spRat,aes(fill=succerat,geometry=geometry),alpha=0.9,color="transparent")+
+    coord_sf(xlim = c(min(nco[,1]),max(nco[,1])), ylim = c(min(nco[,2]),max(nco[,2])))+
+    scale_fill_gradientn(
+      colors=palet,
+      oob = scales::squish,na.value="transparent", name=legend)   +
+    labs(x="Longitude", y = "Latitude")+
+    annotate(
+    geom = "text",
+    x = Inf, y = Inf, # Position text in the top right corner
+    label = paste0("Overall detection\n rate: ",round(Hit_tot),"%") , # Replace with your text
+    vjust = 2, hjust = 1, # Adjust vertical and horizontal justification
+    size = 3, # Text size
+    color = "black", # Text color
+    fontface = "bold",
+    family = "sans", # Font family
+  )+
+    theme(axis.title=element_text(size=tsize),
+          title = element_text(size=osize),
+          axis.text=element_text(size=osize),
+          panel.background = element_rect(fill = "aliceblue", colour = "grey1"),
+          panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+          legend.title = element_text(size=tsize),
+          legend.text = element_text(size=osize),
+          legend.position = "right",
+          panel.grid.major = element_line(colour = "grey70"),
+          panel.grid.minor = element_line(colour = "grey90"),
+          legend.key = element_rect(fill = "transparent", colour = "transparent"),
+          legend.key.size = unit(1, "cm"))
+```
+# 3. Detection of compound events with different temporal windows
+
+Four different temporal windows are tested:
+
+-   short
+-   medium
+-   large
+-   informed
+
+The time window before the event is defined as follow:
+
+| Windows                                 | Short | Medium | Long | Informed  |
+|-----------------------------------------|:-----:|:------:|:----:|:--------:|
+| **Days before recorded flood event starts** |  14   |   28   |  56  | Variable |
+
+## Spatio-temporal matching for the four windows.
+
+```{r ST matching 4 windows}
+## Definition of temporal windows ----
+
+### Informed window----
+ICW=c(14)
+IHW=c(14)
+IWS=c(56)
+IFlood=c(56)
+IDrought=c(56)
+
+### Three tested windows----
+short=c(14)
+medium=c(28)
+long=c(56)
+
+
+windows= c("informed", "short","medium","long")
+
+### loop over different windows ----
+list_POTn_large<-list()
+list_POTh_large<-list()
+list_POTx_large<-list()
+list_POTl_large<-list()
+list_POTw_large<-list()
+for (w in windows){
+  if (w=="informed"){
+    wflood=IFlood
+    wdrought=IDrought
+    wheat=IHW
+    wcold=ICW
+    wwind=IWS
+  } else if (w=="long"){
+    wflood=long
+    wdrought=long
+    wheat=long
+    wcold=long
+    wwind=long
+  } else if (w=="medium"){
+    wflood=medium
+    wdrought=medium
+    wheat=medium
+    wcold=medium
+    wwind=medium
+  } else if (w=="short"){
+    wflood=short
+    wdrought=short
+    wheat=short
+    wcold=short
+    wwind=short
+  }
+  
+  df_POTn_large=c()
+  df_POTx_large=c()
+  df_POTh_large=c()
+  df_POTl_large=c()
+  df_POTw_large=c()
+  for (id in 1:length(NutVector)){
+    #print(id)
+    #id=345
+    NUTl=NutVector[id]
+    #NUTl="FRK24"
+    High_events=fl_events[which(fl_events$NUT==NUTl),]
+    if (length(High_events$X)>0){
+
+      Low_events=dr_events[which(dr_events$NUT==NUTl),]
+      High_events=fl_events[which(fl_events$NUT==NUTl),]
+      HW_events=hw_events[which(hw_events$nuts_id==NUTl),]
+      CW_events=cw_events[which(cw_events$nuts_id==NUTl),]
+      WS_events=ws_events[which(ws_events$nuts_id==NUTl),]
+      matches <- lapply(list_of_word_vectors, function(vector) NUTl %in% vector)
+      tm=which(matches==T)
+      Hanze_Nut=Hanze_flood[tm,]
+      Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
+      #now check overlap with mt detected anomalies
+      Hanze_Nut$eid=Hanze_Nut$ï..ID
+      df_POTh_keep=c()
+      df_POTl_keep=c()
+      df_POTx_keep=c()
+      df_POTn_keep=c()
+      df_POTw_keep=c()
+      for (e in 1:length(Hanze_Nut$ï..ID)){
+        
+        ### Flood sequence ----
+        #modelled event has to end at minimum 4 days before observed starts
+        #modelled event has to start at most xx days before observed event has started
+        POTh_keep <- process_events(events_df=High_events, reference_df=Hanze_Nut, 
+                                    event_idx=e, window=wflood, nut_id=NUTl,haz="flood")
+        df_POTh_keep=rbind(df_POTh_keep,POTh_keep)
+        
+        ### Drought-flood -----
+        # #modelled event has to start before observed ends
+        # #modelled event has to end at most xx days before observed event has started
+        POTl_keep <- process_events(events_df=Low_events, reference_df=Hanze_Nut, 
+                                    event_idx=e, window=wdrought, nut_id=NUTl,haz="drought")
+        df_POTl_keep=rbind(df_POTl_keep,POTl_keep)
+        
+        ### Hot-Wet sequence -----
+        #modelled event has to end before observed starts
+        #modelled event has to end at most xx days before observed event starts
+        POTx_keep <- process_events(events_df=HW_events, reference_df=Hanze_Nut, 
+                                    event_idx=e, window=wheat, nut_id=NUTl,haz="heat")
+        df_POTx_keep=rbind(df_POTx_keep,POTx_keep)
+        
+        ### Cold-flood event -----
+        #modelled event has to start before observed ends
+        #modelled event has to end at most xx days before observed event starts
+        POTn_keep <- process_events(events_df=CW_events, reference_df=Hanze_Nut, 
+                             event_idx=e, window=wcold, nut_id=NUTl,haz="cold")
+        df_POTn_keep=rbind(df_POTn_keep,POTn_keep)
+        
+        ### Wind-flood event -----
+        #modelled event has to start before observed ends
+        #modelled event has to end at most xx days before observed event starts
+        POTw_keep <- process_events(events_df=WS_events, reference_df=Hanze_Nut, 
+                              event_idx=e, window=wwind, nut_id=NUTl,haz="wind")
+        df_POTw_keep=rbind(df_POTw_keep,POTw_keep)
+      }
+      
+      df_POTh_keep=as.data.frame(df_POTh_keep)
+      df_POTl_keep=as.data.frame(df_POTl_keep)
+      df_POTx_keep=as.data.frame(df_POTx_keep)
+      df_POTn_keep=as.data.frame(df_POTn_keep)
+      df_POTw_keep=as.data.frame(df_POTw_keep)
+      
+      df_POTh_large=rbind(df_POTh_large,df_POTh_keep)
+      df_POTl_large=rbind(df_POTl_large,df_POTl_keep)
+      df_POTx_large=rbind(df_POTx_large,df_POTx_keep)
+      df_POTn_large=rbind(df_POTn_large,df_POTn_keep)
+      df_POTw_large=rbind(df_POTw_large,df_POTw_keep)
+      
+    }
+  }
+  
+  df_POTh_large$NEID=paste0(df_POTh_large$eventID,df_POTh_large$NUTID)
+  df_POTl_large$NEID=paste0(df_POTl_large$eventID,df_POTl_large$NUTID)
+  df_POTx_large$NEID=paste0(df_POTx_large$eventID,df_POTx_large$NUTID)
+  df_POTn_large$NEID=paste0(df_POTn_large$eventID,df_POTn_large$NUTID)
+  df_POTw_large$NEID=paste0(df_POTw_large$eventID,df_POTw_large$NUTID)
+  
+  list_POTn_large<-c(list_POTn_large,list(df_POTn_large))
+  list_POTx_large<-c(list_POTx_large,list(df_POTx_large))
+  list_POTh_large<-c(list_POTh_large,list(df_POTh_large))
+  list_POTl_large<-c(list_POTl_large,list(df_POTl_large))
+  list_POTw_large<-c(list_POTw_large,list(df_POTw_large))
+  
+}
+
+```
+
+## Analysis of the four windows and classification into all possible hazard combinations
+
+Observed flood events can include zero (no compounding hazards) to five (all compounding hazards occur withing the defined window) compound hazards.
+
+```{r Classification into multi-hazard combinations, fig.width=12, fig.height=8}
+plot1=list()
+list_eventc2=list()
+list_call=list()
+for (w in c(1:4)){
+  Events_prefflood=inner_join(list_POTh_large[[w]],Hanze_flood_1980, by=c("eventID"="ï..ID"))
+  Events_precoflood=inner_join(list_POTl_large[[w]],Hanze_flood_1980, by=c("eventID"="ï..ID"))
+  Events_prehflood=inner_join(list_POTx_large[[w]],Hanze_flood_1980, by=c("eventID"="ï..ID"))
+  Events_precflood=inner_join(list_POTn_large[[w]],Hanze_flood_1980, by=c("eventID"="ï..ID"))
+  Events_prewflood=inner_join(list_POTw_large[[w]],Hanze_flood_1980, by=c("eventID"="ï..ID"))
+  
+  Events_prehflood$time=Events_prehflood$stardate
+  Events_precflood$time=Events_precflood$stardate
+  Events_prewflood$time=Events_prewflood$stardate
+  
+  ### creation of table with similar structures for each hazard -----
+  ##### Flood----
+  C_flood_ev=Events_prefflood
+  C_flood_ev$stdate=as.POSIXct(as.Date(C_flood_ev$stpeaks, origin = "1980-01-01"))
+  
+  #identification of events that correspond to the recorded flood event
+  kept_col=c("NUT","dtime1", "duration","peaks","time","eventID","NEID")
+  mkc=match(kept_col,colnames(C_flood_ev))
+  C_flood_ev=C_flood_ev[mkc]
+  C_flood_ev$peaks=(C_flood_ev$peaks-.98)/0.02
+  C_flood_ev$time=as.Date(C_flood_ev$time)
+
+  ##### Cold ----
+  C_cold_ev=Events_precflood
+  dura=as.numeric(difftime(as.Date(C_cold_ev$end),as.Date(C_cold_ev$begin)))
+  C_cold_ev$time=as.Date(C_cold_ev$time)
+  C_cold_ev$duration=C_cold_ev$intensity
+  C_cold_ev$NUT=C_cold_ev$nuts_id
+  C_cold_ev$peaks=1
+  C_cold_ev$dtime1[which(C_cold_ev$dtime1>0)]=0
+  colsel=match(colnames(C_flood_ev),colnames(C_cold_ev))
+  C_cold_ev=C_cold_ev[colsel]
+  ymon=month(C_cold_ev$time)
+  #remove cold events occuring during the "warm season"
+  season=rep("cold",length(ymon))
+  season[which(ymon>4 & ymon<11)]="warm"
+  C_cold_ev=C_cold_ev[-which(season=="warm"),]
+  
+  ##### Heat ----
+  C_heat_ev=Events_prehflood
+  dura=as.numeric(difftime(as.Date(C_heat_ev$end),as.Date(C_heat_ev$begin)))
+  C_heat_ev$time=as.Date(C_heat_ev$time)
+  C_heat_ev$duration=C_heat_ev$intensity
+  C_heat_ev$NUT=C_heat_ev$nuts_id
+  C_heat_ev$peaks=1
+  colsel=match(colnames(C_flood_ev),colnames(C_heat_ev))
+  C_heat_ev=C_heat_ev[colsel]
+  ymon=month(C_heat_ev$time)
+  #remove hot events occuring during the "cold season"
+  season=rep("cold",length(ymon))
+  season[which(ymon>4 & ymon<11)]="warm"
+  C_heat_ev=C_heat_ev[-which(season=="cold"),]
+  
+  #### Wind ----
+  C_wind_ev=Events_prewflood
+  dura=as.numeric(difftime(as.Date(C_wind_ev$enddate),as.Date(C_wind_ev$stardate)))
+  C_wind_ev$time=as.Date(C_wind_ev$time)
+  C_wind_ev$duration=dura
+  C_wind_ev$NUT=C_wind_ev$nuts_id
+  C_wind_ev$peaks=C_wind_ev$intensity
+  C_wind_ev$dtime1[which(C_wind_ev$dtime1>0)]=0
+  colsel=match(colnames(C_flood_ev),colnames(C_wind_ev))
+  C_wind_ev=C_wind_ev[colsel]
+  
+  ##### Drought ----
+  C_drought_ev=Events_precoflood
+  C_drought_ev$low_peaks=((1-C_drought_ev$low_peaks)-0.95)/0.05
+  C_drought_ev$time=as.Date(C_drought_ev$time)
+  C_drought_ev$peaks=C_drought_ev$low_peaks
+  C_drought_ev$duration=C_drought_ev$cluster_length
+  C_drought_ev$dtime1[which(C_drought_ev$dtime1>0)]=0
+  colsel=match(colnames(C_flood_ev),colnames(C_drought_ev))
+  C_drought_ev=C_drought_ev[colsel]
+  names(C_drought_ev)=names(C_heat_ev)=names(C_cold_ev)=names(C_wind_ev)=names(C_flood_ev)
+  
+  C_drought_ev$evtype="drought"
+  C_flood_ev$evtype="flood"
+  C_heat_ev$evtype="heat"
+  C_cold_ev$evtype="cold"
+  C_wind_ev$evtype="wind"
+  
+  ### Combine all detected compound events ----
+  C_all_haz=rbind(C_flood_ev,C_drought_ev,C_heat_ev,C_cold_ev,C_wind_ev)
+  list_call<-c(list_call,list(C_all_haz))
+  
+  all_events=unique(Hanze_flood_1980$ï..ID)
+  mh_events=unique(C_all_haz$eventID)
+  
+  #number of events for each category
+  v1=(unique(Hanze_flood_1980$ï..ID))
+  v2=(unique(Events_prefflood$eventID))
+  v3=(unique(Events_precoflood$eventID))
+  v4=(unique(Events_prehflood$eventID))
+  v5=(unique(Events_precflood$eventID))
+  v6=(unique(Events_prewflood$eventID))
+  
+  #number of single events
+  s_events=all_events[which(is.na(match(all_events,mh_events)))]
+  
+  evtypes=c("drought","flood","heat","cold","wind","single")
+  events_class=c()
+  for (ie in 1:length(all_events))
+  {
+    evsel=all_events[ie]
+    cls=vector(mode="integer",length=7)
+    C_all_s=C_all_haz[which(C_all_haz$eventID==evsel),]
+    cls[1]=evsel
+    evt=unique(C_all_s$evtype)
+    if (length(C_all_s$NUT)<1){
+      evt="single"
+    }
+    mt=which(!is.na(match(evtypes,evt)))
+    cls[mt+1]=1
+    events_class=rbind(events_class,cls)
+  }
+  
+  events_class=as.data.frame(events_class)
+  events_class$nh=events_class[,2]+events_class[,3]+events_class[,4]+events_class[,5]+events_class[,6]
+  
+  
+  colnames(events_class)=c("eventID","predrought","preflood","preheat","precold","prewind","single","nh")
+
+  #single events category
+  sing_events=events_class[which(events_class$nh==0),]
+  sing_events$event_name="single-flood"
+  
+  #bivariate events category
+  biv_events=events_class[which(events_class$nh==1),]
+  biv_events$event_name=NA
+  biv_events$event_name[which(biv_events$predrought==1)]="drought-flood"
+  biv_events$event_name[which(biv_events$preflood==1)]="wet-sequence"
+  biv_events$event_name[which(biv_events$preheat==1)]="heat-flood"
+  biv_events$event_name[which(biv_events$precold==1)]="cold-flood"
+  biv_events$event_name[which(biv_events$prewind==1)]="wind-flood"
+  
+  #trvariate events category
+  triv_events=events_class[which(events_class$nh==2),]
+  triv_events$event_name=NA
+  triv_events$event_name[which(triv_events$predrought==1 &
+                                 triv_events$preflood==1)]="drought-wet-sequence"
+  triv_events$event_name[which(triv_events$predrought==1 &
+                                 triv_events$preheat==1)]="heat-drought-flood"
+  triv_events$event_name[which(triv_events$preflood==1 &
+                                 triv_events$preheat==1)]="heat-wet-sequence"
+  triv_events$event_name[which(triv_events$preflood==1 &
+                                 triv_events$precold==1)]="cold-wet-sequence"
+  triv_events$event_name[which(triv_events$preheat==1 &
+                                 triv_events$precold==1)]="cold-heat-wet"
+  triv_events$event_name[which(triv_events$predrought==1 &
+                                 triv_events$precold==1)]="cold-drought-flood"
+  triv_events$event_name[which(triv_events$predrought==1 &
+                                 triv_events$prewind==1)]="wind-drought-flood"
+  triv_events$event_name[which(triv_events$preflood==1 &
+                                 triv_events$prewind==1)]="wind-wet-sequence"
+  triv_events$event_name[which(triv_events$precold==1 &
+                                 triv_events$prewind==1)]="wind-cold-flood"
+  triv_events$event_name[which(triv_events$preheat==1 &
+                                 triv_events$prewind==1)]="wind-heat-flood"
+  
+  
+  #all events together
+  event_class2=rbind(sing_events,biv_events,triv_events)
+  
+  #quadrivariate events category
+  quadriv_events=events_class[which(events_class$nh==3),]
+  if (length(quadriv_events$eventID)>0){
+    quadriv_events$event_name=NA
+    quadriv_events$event_name[which(quadriv_events$predrought==1 & 
+                                      quadriv_events$preflood==1 &
+                                      quadriv_events$preheat==1)]="heat-drought-to-wet-sequence"
+    quadriv_events$event_name[which(quadriv_events$predrought==1 &
+                                      quadriv_events$preflood==1 &
+                                      quadriv_events$precold==1)]="cold-drought-to-wet-sequence"
+    quadriv_events$event_name[which(quadriv_events$preheat==1 &
+                                      quadriv_events$preflood==1 &
+                                      quadriv_events$precold==1)]="cold-heat-wet-sequence"
+    quadriv_events$event_name[which(quadriv_events$prewind==1 &
+                                      quadriv_events$preheat==1 &
+                                      quadriv_events$precold==1)]="wind-cold-heat-flood"
+    quadriv_events$event_name[which(quadriv_events$predrought==1 &
+                                      quadriv_events$prewind==1 &
+                                      quadriv_events$precold==1)]="wind-cold-drought-flood"
+    quadriv_events$event_name[which(quadriv_events$predrought==1 &
+                                      quadriv_events$preheat==1 &
+                                      quadriv_events$prewind==1)]="wind-heat-drought-flood"
+    quadriv_events$event_name[which(quadriv_events$preflood==1 &
+                                      quadriv_events$preheat==1 &
+                                      quadriv_events$prewind==1)]="wind-heat-wet-sequence"
+    quadriv_events$event_name[which(quadriv_events$preflood==1 &
+                                      quadriv_events$precold==1 &
+                                      quadriv_events$prewind==1)]="wind-cold-wet-sequence"
+    quadriv_events$event_name[which(quadriv_events$preflood==1 &
+                                      quadriv_events$predrought==1 &
+                                      quadriv_events$prewind==1)]="wind-drought-to-wet-sequence"
+    quadriv_events$event_name[which(quadriv_events$precold==1 &
+                                      quadriv_events$preheat==1 &
+                                      quadriv_events$predrought==1)]="cold-heat-drought-flood"
+    event_class2=rbind(event_class2,quadriv_events)
+  }
+  #remaining events
+  quindriv_events=events_class[which(events_class$nh==4),]
+  if (length(quindriv_events$eventID)>0){
+    quindriv_events$event_name=NA
+    quindriv_events$event_name[which(quindriv_events$precold==1 &
+                                       quindriv_events$predrought==1 &
+                                       quindriv_events$preflood==1 &
+                                       quindriv_events$preheat==1)]="heat-cold-drought-to-wet-sequence"
+    quindriv_events$event_name[which(quindriv_events$precold==1 &
+                                       quindriv_events$predrought==1 &
+                                       quindriv_events$preflood==1 &
+                                       quindriv_events$prewind==1)]="wind-cold-drought-to-wet-sequence"
+    quindriv_events$event_name[which(quindriv_events$prewind==1 &
+                                       quindriv_events$predrought==1 & 
+                                       quindriv_events$preflood==1 &
+                                       quindriv_events$preheat==1)]="wind-heat-drought-to-wet-sequence"
+    quindriv_events$event_name[which(quindriv_events$prewind==1 &
+                                       quindriv_events$precold==1 & 
+                                       quindriv_events$preflood==1 &
+                                       quindriv_events$preheat==1)]="wind-heat-cold-wet-sequence"
+    quindriv_events$event_name[which(quindriv_events$prewind==1 &
+                                       quindriv_events$predrought==1 & 
+                                       quindriv_events$precold==1 &
+                                       quindriv_events$preheat==1)]="wind-heat-cold-drought-flood"
+    event_class2=rbind(event_class2,quindriv_events)
+  }
+  
+  sixdriv_events=events_class[which(events_class$nh==5),]
+  if (length(sixdriv_events$eventID)>0){
+    sixdriv_events$event_name=NA
+    sixdriv_events$event_name="wind-heat-cold-drought-to-wet-sequence"
+    
+    event_class2=rbind(event_class2,sixdriv_events)
+  }
+  uni=unique(event_class2$event_name)
+  event_class2$event_name <- factor(event_class2$event_name,  levels =uni)
+  event_class2$nhcat=as.character(event_class2$nh)
+  list_eventc2=c(list_eventc2,list(event_class2))
+  
+  ###[Supplement Plot] - plot of detected multi-hazard events before attribution to archetypes ----
+  
+  lpalett=length(unique(event_class2$nhcat))
+  palet=c(hcl.colors(lpalett, palette = "YlOrRd", alpha = NULL, rev = T, fixup = TRUE))
+  current_window=windows[w]
+  plot1[[w]]<- ggplot(event_class2, aes(x = event_name,fill = nhcat))+ 
+    geom_bar() + 
+    coord_flip()+
+    scale_fill_manual(
+      values=palet, name="Number of compounding hazards")   +
+    guides(fill = guide_legend(title.position = "top",nrow = 1,
+                               reverse=F, title.hjust=0.5, 
+                               barwidth = 3, barheight = 1.5)) +
+    scale_y_continuous(name="Number of events",expand = expansion(mult = c(0, 0)))+
+    scale_x_discrete(name="Compound event name")+
+    theme(axis.title=element_text(size=14, face="bold"),
+          axis.text = element_text(size=12),
+          axis.text.x = element_text(size=12,face="bold"),
+          panel.background = element_rect(fill = "white", colour = "white"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+          legend.title = element_text(size=14, face="bold"),
+          legend.text = element_text(size=12),
+          axis.ticks.y = element_blank(),  # Remove x-axis tickmarks
+          panel.grid.major.y = element_line(color = "lightgray",linetype="dashed"),
+          panel.grid.minor.y = element_line(color = "lightgray"),
+          panel.grid.major.x = element_blank(),
+          legend.position = "bottom",
+          legend.title.position = "top",
+          legend.text.position = "bottom",
+          # panel.grid.major = element_line(colour = "grey80"),
+          panel.grid.minor.x = element_blank(),
+          legend.key = element_rect(fill = "transparent", colour = "transparent"),
+          legend.key.size = unit(.8, "cm"))+
+    ggtitle(paste0("compound hazard events for ",current_window," window"))
+    print(plot1[[w]])
+}
+```
+Reorganize compound events into five compound events archetypes:
+
+| Compound event archetype | Definition                                                    | Hazard interrelation type          |
+|------------------|-----------------------------------|--------------------|
+| **Wet sequence**             | Period of wet conditions preceding a flood impact event.      | Precondition – temporally compound |
+| **Drought-flood**            | Flood impact event occurs during or soon after a drought.     | Multivariate - Temporally compound |
+| **Cold-flood**               | Flood event occurs during or rapidly after a cold wave.       | Precondition                       |
+| **Heat-flood sequence**      | Flood impact event occurs rapidly after a heatwave.           | Precondition                       |
+| **Compound wind-flood**      | Extreme wind precedes or co-occurs with a flood impact event. | Multivariate - Temporally compound |
+
+Recorded flood events with multiple matching compound hazards are duplicated.
+
+```{r Classification into conpoud events archetypes}
+taglist=c()
+event_classic=c()
+event_multlist=c()
+for (w in 1:4){
+  event_all1=list_eventc2[[w]]
+  aev=length(unique(event_all1$eventID))
+  event_mh=event_all1[which(event_all1$nh>=2),]
+  mhev=unique(event_mh$eventID)
+  event_nh=event_all1[which(event_all1$nh<2),]
+  # loop over event_mh
+  event_m1=event_mh[1,]
+  # Repeat each event (rows) nh (the number of different compounding hazards) times
+  repeated_table <- event_mh[rep(1:nrow(event_mh), event_mh$nh), ]
+  event_mh2=c()
+  for (evi in 1:length(mhev)){
+    event_m1=repeated_table[which(repeated_table$eventID==mhev[evi]),]
+    hs=which(event_m1[1,]==1)
+    locp=match(col_locs,colnames(event_m1))
+    for(r in 1:length(hs)){
+      rh=hs[r]
+      locn=locp[-which(locp==rh)]
+      event_m1[r,locn]=0
+    }
+    event_mh2=rbind(event_mh2,event_m1)
+  }
+  event_mh2$event_name <- as.character(event_mh2$event_name)
+  event_mh2$event_name[which(event_mh2$predrought==1)]="drought-flood"
+  event_mh2$event_name[which(event_mh2$preflood==1)]="wet-sequence"
+  event_mh2$event_name[which(event_mh2$preheat==1)]="heat-flood"
+  event_mh2$event_name[which(event_mh2$precold==1)]="cold-flood"
+  event_mh2$event_name[which(event_mh2$prewind==1)]="wind-flood"
+
+  #remerge events
+  event_mh3=rbind(event_nh,event_mh2)
+  event_mh3$rep=event_mh3$nh
+  event_mh3$rep[which(event_mh3$nh==0)]=1
+  #merge with HANZE
+  event_class3=inner_join(event_mh3,Hanze_flood_1980,by=c("eventID"="ï..ID"))
+  event_classic=rbind(event_classic,event_class3)
+  
+  #aggregate by event type for fatalities, people affected and economic damages
+  event_tag<-aggregate(list(losses=event_class3$Losses..2020.euro.,
+                            fat=event_class3$Fatalities,af=event_class3$Persons.affected,
+                            nh=event_class3$rep),
+                       by = list(Events=event_class3$event_name),
+                       FUN = function(x) c(mean=mean(x,na.rm=T),len=length(x),sum=sum(x,na.rm=T)))
+  event_tag <- do.call(data.frame, event_tag)
+  
+  event_mag<-aggregate(list(losses=event_class3$Losses..2020.euro.),
+                       by = list(Events=event_class3$eventID),
+                       FUN = function(x) c(len=length(x)))
+  event_mag <- do.call(data.frame, event_mag)
+  event_mult=sum(event_mag$losses)/length(event_mag$losses)
+  event_multlist=c(event_multlist,event_mult)
+  
+  event_tag$nh=event_tag$nh.mean
+  event_tag<-event_tag[,-c(11,12,13)]
+  event_tag$window=windows[w]
+  taglist=rbind(taglist,event_tag)
+}
+
+#color scale for events
+color_events=c("single-flood"="gray","wet-sequence"="dodgerblue4","heat-flood"="darksalmon","drought-flood"="orange","cold-flood"="lightblue","wind-flood"="seagreen")
+
+color_windows=c("short"="darksalmon","medium"="orange","long"="lightblue","physical"="darkgrey")
+
+# reorder the levels of the window column
+taglist$Events <- factor(taglist$Events, 
+                         levels = c("single-flood","wet-sequence","heat-flood","drought-flood","cold-flood","wind-flood"),
+                         ordered = TRUE)
+
+taglist$window <- factor(taglist$window, 
+                         levels =c("informed","short","medium","long"),
+                         ordered = TRUE)
+
+#check that the same amount of events are present for each window
+taglist_chk<-aggregate(list(len=taglist$fat.len),
+                       by = list(taglist$window),
+                       FUN = function(x) c(sum=sum(x,na.rm=T)))
+taglist_chk <- do.call(data.frame, taglist_chk)
+taglist_chk$mult=event_multlist
+
+
+taginformed=taglist[which(taglist$window=="informed"),]
+taginformed$color="black"
+tagother=taglist[-which(taglist$window=="informed"),]
+
+ggplot(tagother, aes(x = Events,y=losses.len,fill=window,category=window))+ 
+  geom_bar(stat = "identity",position="dodge",color="black")+ 
+  geom_bar(data=taginformed, aes(x = Events,y=losses.len,color=color),
+           stat = "identity",position="dodge",fill="transparent",lwd=1,lty=5)+ 
+  scale_y_continuous(name="number of events")+
+  coord_flip()+
+  scale_fill_manual(
+    values=color_windows,name="windows") +
+  scale_color_manual(
+    values="black",label="",name="informed \nwindow") +
+  theme(axis.title=element_text(size=18, face="bold"),
+        axis.text = element_text(size=14),
+        axis.text.x = element_text(size=14,face="bold"),
+        panel.background = element_rect(fill = "white", colour = "white"),
+        panel.grid = element_blank(),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=18, face="bold"),
+        legend.text = element_text(size=14),
+        axis.ticks.y = element_blank(),  # Remove x-axis tickmarks
+        panel.grid.major.y = element_line(color = "lightgray"),
+        panel.grid.minor.y = element_line(color = "lightgray"),
+        legend.position = "right",
+        panel.grid.major = element_line(colour = "grey80"),
+        panel.grid.minor.x = element_line(colour = "grey90",linetype="dashed"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(.8, "cm"))
+```
+# Part 3: Analysis on the informed window
+
+The informed is retained for the remaining parts of the analysis.
+
+## 3.1 - Event-based analysis Creation of the final table with compound events archetypes
+
+Bar chart: Evolution of compound event frequency through time.
+
+```{r Compound event temporal dynamics, warning=FALSE}
+#redoing previous steps only for informed window
+w=1
+event_all1=list_eventc2[[w]]
+aev=length(unique(event_all1$eventID))
+event_mh=event_all1[which(event_all1$nh>=2),]
+mhev=unique(event_mh$eventID)
+event_nh=event_all1[which(event_all1$nh<2),]
+event_m1=event_mh[1,]
+
+#locations
+col_locs=c("predrought","preflood","preheat","precold","prewind")
+locp=match(col_locs,colnames(event_m1))
+# Repeat each row nh times
+repeated_table <- event_mh[rep(1:nrow(event_mh), event_mh$nh), ]
+event_mh2=c()
+for (evi in 1:length(mhev)){
+  event_m1=repeated_table[which(repeated_table$eventID==mhev[evi]),]
+  hs=which(event_m1[1,]==1)
+  for(r in 1:length(hs)){
+    rh=hs[r]
+    locn=locp[-which(locp==rh)]
+    event_m1[r,locn]=0
+  }
+  event_mh2=rbind(event_mh2,event_m1)
+}
+event_mh2$event_name <- as.character(event_mh2$event_name)
+event_mh2$event_name[which(event_mh2$predrought==1)]="drought-flood"
+event_mh2$event_name[which(event_mh2$preflood==1)]="wet-sequence"
+event_mh2$event_name[which(event_mh2$preheat==1)]="heat-flood"
+event_mh2$event_name[which(event_mh2$precold==1)]="cold-flood"
+event_mh2$event_name[which(event_mh2$prewind==1)]="wind-flood"
+#remerge events
+event_mh3=rbind(event_nh,event_mh2)
+#merge with HANZE
+event_class3=inner_join(event_mh3,Hanze_flood_1980,by=c("eventID"="ï..ID"))
+
+#aggregate by events and years
+event_tag<-aggregate(list(losses=event_class3$Losses..2020.euro.,
+                          fat=event_class3$Fatalities,
+                          af=event_class3$Persons.affected),
+                     by = list(Events=event_class3$event_name,
+                               year=event_class3$Year),
+                     FUN = function(x) c(mean=mean(x,na.rm=T),
+                                         len=length(x),sum=sum(x,na.rm=T)))
+event_tag <- do.call(data.frame, event_tag)
+
+
+### [Plot] - Evolution of the frequency of compound events through time ----
+unev=unique(event_tag$Events)
+#fill gaps for years with no recorded events
+all_years=data.frame(year = rep(seq(min(event_tag$year), 
+                                    max(event_tag$year), by = 1),6))
+all_evt=data.frame(event=c(rep(unev[1],40),rep(unev[2],40),rep(unev[3],40),
+                           rep(unev[4],40),rep(unev[5],40),rep(unev[6],40)))
+all_evy=data.frame(all_years,all_evt)
+all_evy$yev=paste(all_evy$year,all_evy$event,sep=" ")
+event_tag$yev=paste(event_tag$year,event_tag$Events,sep=" ")
+df_filled <- left_join(all_evy, event_tag, by = "yev")
+for (c in 1:length(df_filled)){
+  df_filled[which(is.na(df_filled[,c])),c]=0
+}
+event_tag$avg10=NA
+
+data <- df_filled %>%
+  group_by(year.x, event) %>%
+  summarise(n = sum(losses.len), .groups = 'drop') %>%
+  # Summarise and drop grouping
+  group_by(year.x) %>%  
+  # Regroup by year.x to calculate percentage within each year
+  mutate(percentage = n / sum(n) * 100) %>%
+  ungroup()  # Ungroup if needed for further operations
+
+data$avg10=NA
+for (evn in unique(df_filled$event)){
+  event_sub=data[which(data$event==evn),]
+  event_sub=event_sub[order(event_sub$year.x),]
+  event_sub$avg10=tsEvaNanRunningMean(event_sub$percentage,10)
+  data$avg10[which(data$event==evn)]=event_sub$avg10
+}
+
+color_events=c("single-flood"="gray","wet-sequence"="dodgerblue4","heat-flood"="darksalmon","drought-flood"="orange","cold-flood"="lightblue","wind-flood"="seagreen")
+mylab= "number of events"
+ggplot()+
+  geom_bar(data=event_tag, aes(x = year, y = losses.len, fill = as.character(Events)),stat = "identity",color="transparent", alpha=0.9) +
+  scale_y_continuous(
+    name = "Number of events",
+    breaks=seq(0,200,20),
+    minor_breaks = seq(0,200,10),
+    sec.axis = sec_axis( transform=~.*.5, name="Proportion of events (%)",
+                         breaks=seq(0,100,20))
+  )+
+  geom_line(data=data,aes(x=year.x, y=avg10*2,color=event),lwd=1)+
+  geom_point( data=data,aes(x=year.x, y=avg10*2,fill=event),size = 1.5,
+              pch = 21,
+              color = "white",
+              stroke = .8 )+
+  scale_color_manual(name="Event archetypes",
+                     values=color_events) +
+  scale_fill_manual(name="Event archetypes",
+                    values=color_events,drop=FALSE) +
+  labs(x="Year",y=mylab) +
+
+  theme(axis.title=element_text(size=16, face="bold"),
+        axis.text = element_text(size=12),
+        panel.background = element_rect(fill = "white", colour = "white"),
+        panel.grid = element_blank(),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=14),
+        legend.text = element_text(size=12),
+        legend.position = "right",
+        panel.grid.major = element_line(colour = "grey60"),
+        panel.grid.minor.y = element_line(colour = "grey80",linetype="dashed"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(.8, "cm"))
+
+```
+
+Plot of seasonality for each event type
+
+```{r Event seasonnality and flood types}
+
+Events_class<-event_class3
+Events_class$Type[which(Events_class$Type=="River/Coastal")]="River"
+Events_class$yday=yday(as.Date(Events_class$Start.date))
+Events_class$theta=Events_class$yday*(2*pi/365.25)
+
+ydays = bind_rows(Events_class, Events_class, Events_class)
+ydays$bday = ydays$yday + rep(c(0,365,365*2),each=length(Events_class$yday))
+
+dtf=Events_class[which(Events_class$event_name=="drought-flood"),]
+seasondtf=seasony(dtf$yday)
+
+
+sing=Events_class[which(Events_class$event_name=="single-flood"),]
+seasonsing=seasony(sing$yday)
+
+
+fsq=Events_class[which(Events_class$event_name=="wet-sequence"),]
+seasonfsq=seasony(fsq$yday)
+
+
+htf=Events_class[which(Events_class$event_name=="heat-flood"),]
+seasonhtf=seasony(htf$yday)
+
+
+ctf=Events_class[which(Events_class$event_name=="cold-flood"),]
+seasonctf=seasony(ctf$yday)
+
+
+wtf=Events_class[which(Events_class$event_name=="wind-flood"),]
+seasonwtf=seasony(wtf$yday)
+
+seasonall=seasony(Events_class$yday)
+
+newday=ydays[c((length(Events_class$yday)+1):(2*length(Events_class$yday))),]
+ydays$Type[which(ydays$Type=="River/Coastal")]="River"
+color_type=c("River/Coastal"="purple","River"="slateblue","Flash"="yellow3")
+
+ydays$event_name <- factor(ydays$event_name, 
+                         levels = c("single-flood","wet-sequence","heat-flood","drought-flood","cold-flood","wind-flood"),
+                         ordered = TRUE)
+
+ptn=direction_labeller(ydays$bday)
+library(ggbeeswarm)
+ggplot(ydays, aes(y=factor(event_name), x=(bday),color=Type)) +
+
+  geom_quasirandom(alpha=0.5, size=3, bandwidth = 0.1)+
+  coord_cartesian(xlim=c(366,731))+
+  scale_y_discrete(name="MH events")+
+  scale_size(range = c(1, 10), trans="sqrt",name= "losses (million euros)",
+             breaks=c(100000,1000000,10000000,100000000,1000000000,10000000000), labels=c("0.1","1", "10", "100", "1000","10 000"))+
+
+  scale_x_continuous(name="day of the year",labels=direction_labeller, breaks=seq(732,30.5,-30.5),expand = c(0, 0))+
+  scale_color_manual(
+    values=color_type) +
+  guides(colour = guide_legend(override.aes = list(size = 10)))+
+  theme(axis.title=element_text(size=18, face="bold"),
+        axis.text = element_text(size=14),
+        panel.background = element_rect(fill = "white", colour = "white"),
+        panel.grid = element_blank(),
+        legend.position = "top",
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=18),
+        legend.text = element_text(size=14),
+        panel.grid.major = element_line(colour = "grey60"),
+        panel.grid.minor.x = element_line(colour = "grey80",linetype="dashed"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(.8, "cm"))
+
+```
+
+Piechart or flood types per compound event
+
+```{r flood types per compound event}
+
+event_pie<-aggregate(list(losses=Events_class$Losses..2020.euro.),
+                     by = list(Events=Events_class$event_name,Type=Events_class$Type),
+                     FUN = function(x) c(len=length(x)))
+event_pie <- do.call(data.frame, event_pie)
+
+event_p2=event_pie[which(event_pie$Events=="cold-flood"),]
+event_p3=event_pie[which(event_pie$Events=="drought-flood"),]
+event_p4=event_pie[which(event_pie$Events=="heat-flood"),]
+event_p5=event_pie[which(event_pie$Events=="wet-sequence"),]
+event_p1=event_pie[which(event_pie$Events=="wind-flood"),]
+event_p6=event_pie[which(event_pie$Events=="single-flood"),]
+
+p1 <- ggplot(event_p1, aes(x="", y=losses, fill=Type)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_manual(
+    values=color_type) +
+  labs(title = "wind-flood")+
+  theme_void()+
+  theme(legend.position = "none")
+
+p2 <- ggplot(event_p2, aes(x="", y=losses, fill=Type)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_manual(
+    values=color_type) +
+  labs(title = "cold-flood")+
+  theme_void()+
+  theme(legend.position = "none")
+
+p3 <- ggplot(event_p3, aes(x="", y=losses, fill=Type)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  scale_fill_manual(
+    values=color_type) +
+  labs(title = "drought-flood")+
+  theme_void()+
+  theme(legend.position = "none")
+
+p4 <- ggplot(event_p4, aes(x="", y=losses, fill=Type)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  labs(title = "heat-flood")+
+  scale_fill_manual(
+    values=color_type) +
+  theme_void()+
+  theme(legend.position = "none")
+
+p5 <- ggplot(event_p5, aes(x="", y=losses, fill=Type)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  labs(title = "wet-sequence")+
+  scale_fill_manual(
+    values=color_type) +
+  theme_void()+
+  theme(legend.position = "none")
+
+p6 <- ggplot(event_p6, aes(x="", y=losses, fill=Type)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  labs(title = "single-flood")+
+  scale_fill_manual(
+    values=color_type) +
+  theme_void()+
+  theme(legend.position = "none")
+
+# Create the grid of pie charts
+p1 + p2 + p3 + p4 + p5 + p6 +
+  plot_layout(ncol = 1)
+
+```
+
+Add Return period of the flood event to previous dataset
+
+```{r}
+Hanze_events_RP=read.csv(file=paste0(hydroDir,"HANZE/Attribution_losses_under_factual_scenario_river_with_RP.csv"))
+Hanze_events_RP$NEID=paste0(Hanze_events_RP$HANZE_ID,Hanze_events_RP$NUTS3)
+unikid=unique(Hanze_events_RP$HANZE_ID)
+Hanze_events_RP2=c()
+
+for (evx in unikid){
+  sev=Hanze_events_RP[which(Hanze_events_RP$HANZE_ID==evx),]
+  sumloss=sum(sev$Economic_loss)
+  sev$ratioloss=round(sev$Economic_loss/sumloss,2)
+  
+  sumfat=sum(sev$Fatalities)
+  sev$ratiofat=round(sev$Fatalities/sumfat,2)
+  
+  sumaf=sum(sev$Persons_affected)
+  sev$ratioaf=round(sev$Persons_affected/sumaf,2)
+  
+  Hanze_events_RP2=rbind(Hanze_events_RP2,sev)
+}
+
+Hanze_events_RP2=Hanze_events_RP2[,-c(1,10,11,12)]
+rpm=match(Hanze_flood_BN$NEID,Hanze_events_RP$NEID)
+Hanze_flood_BN$RPflood=Hanze_events_RP$ReturnPeriod[rpm]
+```
+
+## 3.2 - Region-event based analysis
+
+Distribution of detected single floods and compound events to NUTS3 regions Each row corresponds to a combination of event and NUTS3 region
+
+```{r Regional events}
+RegioEv_data=list_call[[1]]
+nev=unique(RegioEv_data$eventID)
+#aggregate by hazard
+all_Revents=unique(Hanze_flood_BN$NEID)
+evtypes=c("drought","flood","heat","cold","wind")
+events_class=c()
+#creating each row of the dataset
+for (evi in 1:length(all_Revents)){
+  evid=all_Revents[evi]
+  #evid="2413ES521"
+  myev=RegioEv_data[which(!is.na(match(RegioEv_data$NEID,evid))),]
+  uh=unique(myev$evtype)
+  cls=rep(NA, 17)
+  cls[1]=evid
+  evt=uh
+  if (length(myev$NUT)>0){
+    cls[2]=Hanze_flood_BN$NUTl[evi]
+  }
+  for (hz in unique(myev$evtype)){
+    myehz=myev[which(myev$evtype==hz),]
+    #grouping by lag
+    myehz$grp=1
+    myehz=myehz[order(myehz$dtime),]
+    grp=1
+    if (length(myehz$NUT)>1){
+      for (dt in 2:length(myehz$dtime)){
+        dti=myehz$dtime[dt-1]-myehz$dtime[dt]
+        if(dti<=(-2)){
+          grp=grp+1
+        }
+        myehz$grp[dt]=grp
+      }
+    }
+    lev=length(unique(myehz$grp))
+    mxp=round(max(myehz$peaks),3)
+    md=which.min(abs(myehz$dtime))
+    if (length(myev$NUT)<1){
+      evt="single"
+    }
+    #fill characteristics for every hazard
+    mt=which(!is.na(match(evtypes,hz)))
+    cls[(mt-1)*3+3]=lev
+    cls[(mt-1)*3+4]=max(sum(myehz$peaks*myehz$duration),0)
+    cls[(mt-1)*3+5]=myehz$dtime[md]
+  }
+  events_class=rbind(events_class,cls)
+} 
+events_class=as.data.frame(events_class)
+colnames(events_class)=c("eventxNUT_ID","NUTSID","drought.n","drought.i","drought.lag",
+                         "flood.n","flood.i","flood.lag",
+                         "heat.n","heat.i","heat.lag",
+                         "cold.n","cold.i","cold.lag",
+                         "wind.n","wind.i","wind.lag")
+events_class[,c(3:17)]=lapply( events_class[,c(3:17)], function(x) as.numeric(as.character(x)))
+
+
+#match with Hanze
+#remove coastal flooding events
+Hanze_flood_BN2=Hanze_flood_BN[-which(Hanze_flood_BN$Type=="Coastal"),]
+RegioEvents=inner_join(events_class,Hanze_flood_BN2,by=c("eventxNUT_ID"="NEID"))
+```
+
+Saving RegioEvents table for ML analysis
+
+```{r}
+wout=F
+if (wout==T){
+  write.csv(RegioEvents,file=paste0(hydroDir,"CExHanze_REV.csv"))
+}
+
+```
+
+### Generation of summary tables for plots:
+
+-   event_MHRn: total number of compound events per NUTS
+-   event_Nt: occurrence of event types per NUTS
+-   event_Nt2: number of unique mh event per NUTS
+-   event_Nt3: Occurence of different event types
+-   event_Ntx: Regional dominance of event types
+
+```{r Summary tables}
+
+aev=length(unique(RegioEvents$eventxNUT_ID))
+#1 if the hazard occured, otherwise 0
+#do a loop
+for (evn in evtypes){
+  cname=paste0(evn,".n")
+  nname=paste0(evn,".o")
+  RegioEvents[[nname]]=0
+  RegioEvents[[nname]][which(!is.na(RegioEvents[[cname]]))]=1
+  
+}
+
+RegioEvents$nh=RegioEvents$drought.o + RegioEvents$flood.o + RegioEvents$heat.o + RegioEvents$cold.o + RegioEvents$wind.o
+aev=length(unique(RegioEvents$eventxNUT_ID))
+event_mhR=RegioEvents[which(RegioEvents$nh>=2),]
+mhev=unique(event_mhR$eventxNUT_ID)
+#filter columns
+event_mhR=event_mhR[,c(1,2,18:25,39:45)]
+
+event_nhR=RegioEvents[which(RegioEvents$nh<2),]
+#filter columns
+event_nhR=event_nhR[,c(1,2,18:25,39:45)]
+nhev=unique(event_nhR$eventxNUT_ID)
+
+
+# Repeat each row nh times
+repeated_table <- event_mhR[rep(1:nrow(event_mhR), event_mhR$nh), ]
+
+#locations
+col_locs=c("drought.o","flood.o","heat.o","cold.o","wind.o")
+event_mhR2=c()
+for (evi in 1:length(mhev)){
+  event_r1=repeated_table[which(repeated_table$eventxNUT_ID==mhev[evi]),]
+  locp=match(col_locs,colnames(event_r1))
+  hs=which(event_r1[1,]==1)
+  for(r in 1:length(hs)){
+    rh=hs[r]
+    locn=locp[-which(locp==rh)]
+    event_r1[r,locn]=0
+  }
+  event_mhR2=rbind(event_mhR2,event_r1)
+}
+
+event_mhR2$event_name=NA
+event_mhR2$event_name[which(event_mhR2$drought.o==1)]="drought-flood"
+event_mhR2$event_name[which(event_mhR2$flood.o==1)]="wet-sequence"
+event_mhR2$event_name[which(event_mhR2$heat.o==1)]="heat-flood"
+event_mhR2$event_name[which(event_mhR2$cold.o==1)]="cold-flood"
+event_mhR2$event_name[which(event_mhR2$wind.o==1)]="wind-flood"
+#remerge events
+event_nhR$event_name="single-flood"
+event_nhR$event_name[which(event_nhR$drought.o==1)]="drought-flood"
+event_nhR$event_name[which(event_nhR$flood.o==1)]="wet-sequence"
+event_nhR$event_name[which(event_nhR$heat.o==1)]="heat-flood"
+event_nhR$event_name[which(event_nhR$cold.o==1)]="cold-flood"
+event_nhR$event_name[which(event_nhR$wind.o==1)]="wind-flood"
+event_mhR3=rbind(event_nhR,event_mhR2)
+
+
+#event_MHRn: total number of compound events per NUTS
+event_MHRn<-aggregate(list(mh=event_mhR2$nh),
+                    by = list(NUT=event_mhR2$NUTl),
+                    FUN = function(x) c(len=length(x)))
+event_MHRn <- do.call(data.frame, event_MHRn)
+
+#event_Nt: occurrence of event types per NUTS
+event_Nt<-aggregate(list(nh=event_mhR3$NUTl),
+                     by = list(NUT=event_mhR3$NUTl,event_type=event_mhR3$event_name),
+                     FUN = function(x) c(len=length(x)))
+event_Nt <- do.call(data.frame, event_Nt)
+
+#event_Nt2: number of unique mh event per NUTS
+event_Nt2<-aggregate(list(ev=event_Nt$event_type),
+                    by = list(NUT=event_Nt$NUT),
+                    FUN = function(x) c(len=length(x)))
+event_Nt2 <- do.call(data.frame, event_Nt2)
+
+#event_Nt3: Occurence of different event types
+event_Nt3<-aggregate(list(ev=event_Nt$nh),
+                     by = list(NUT=event_Nt$event_type),
+                     FUN = function(x) c(sum=sum(x)))
+event_Nt3 <- do.call(data.frame, event_Nt3)
+
+#most frequent event per region
+event_Nt2$dominant=NA
+for (ii in 1:length(event_Nt2$NUT)){
+  evx=event_Nt[which(event_Nt$NUT==event_Nt2$NUT[[ii]]),]
+  evmax=which.max(evx$nh)
+  mhx=evx$event_type[evmax]
+  event_Nt2$dominant[ii]=mhx
+}
+#regional dominance
+event_NtX=aggregate(list(ev=event_Nt2$NUT),
+                    by = list(NUT=event_Nt2$dominant),
+                    FUN = function(x) c(len=length(x)))
+event_NtX <- do.call(data.frame, event_NtX)
+
+
+```
+
+### Map of compound event occurrence by NUTS3 (one recorded event can count multiple times)
+
+```{r Map compound event occurence}
+event_MHplot=right_join(event_MHRn,NUTS3,by=c("NUT"="NUTS_ID"))
+event_MHplot$bin="0"
+event_MHplot$bin[which(!is.na(event_MHplot$mh))]="1-2"
+event_MHplot$bin[which(event_MHplot$mh>2)]="2-5"
+event_MHplot$bin[which(event_MHplot$mh>5)]="5-10"
+event_MHplot$bin[which(event_MHplot$mh>10)]="10-20"
+event_MHplot$bin[which(event_MHplot$mh>20)]=">20"
+
+labels=c("0","1-2","2-5","5-10","10-20",">20")
+legend2="# compound events"
+palet=c(hcl.colors(6, palette = "YlOrRd", alpha = NULL, rev = F, fixup = TRUE))
+paletf=c(hcl.colors(11, palette = "Purples", alpha = NULL, rev = T, fixup = TRUE))
+ggplot(basemap) +
+  geom_sf(fill="white",color="darkgrey",size=0.5)+
+  geom_sf(data=event_MHplot,aes(fill=bin,geometry=geometry),alpha=0.9,color="transparent")+
+  scale_fill_manual(
+    values=palet, breaks=rev(labels), name=legend2)   +
+  coord_sf(xlim = c(min(nco[,1]),max(nco[,1])), ylim = c(min(nco[,2]),max(nco[,2])))+
+  labs(x="Longitude", y = "Latitude")+
+  theme(axis.title=element_text(size=tsize),
+        title = element_text(size=osize),
+        axis.text=element_text(size=osize),
+        panel.background = element_rect(fill = "aliceblue", colour = "grey1"),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=tsize),
+        legend.text = element_text(size=osize),
+        legend.position = "right",
+        panel.grid.major = element_line(colour = "grey70"),
+        panel.grid.minor = element_line(colour = "grey90"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(1, "cm"))
+```
+
+### Map of total number of events and total losses per NUTS3
+
+```{r Map of total number of events and total losses per NUTS3}
+#Aggregate HANZE events by NUTS
+
+HANZE_NA<-aggregate(list(losses= Hanze_flood_BN2$Losses..2020.euro.,fat= Hanze_flood_BN2$Fatalities,af=Hanze_flood_BN2$Persons.affected),
+                     by = list(NUTS= Hanze_flood_BN2$NUTl),
+                     FUN = function(x) c(mean=mean(x,na.rm=T),len=length(x),sum=sum(x,na.rm=T)))
+HANZE_NA <- do.call(data.frame, HANZE_NA)
+
+#Merge with NUTS shapefile
+Hanze_NAp=right_join(HANZE_NA,NUTS3,by=c("NUTS"="NUTS_ID"))
+
+Hanze_NAp$bin="0"
+Hanze_NAp$bin[which(!is.na(Hanze_NAp$fat.len))]="1-2"
+Hanze_NAp$bin[which(Hanze_NAp$fat.len>2)]="2-5"
+Hanze_NAp$bin[which(Hanze_NAp$fat.len>5)]="5-10"
+Hanze_NAp$bin[which(Hanze_NAp$fat.len>10)]="10-20"
+Hanze_NAp$bin[which(Hanze_NAp$fat.len>20)]=">20"
+
+###[Plot] - total number of events per NUTS3 ----
+labels=c("0","1-2","2-5","5-10","10-20",">20")
+legend2="# events"
+palet=c(hcl.colors(6, palette = "viridis", alpha = NULL, rev = T, fixup = TRUE))
+palet=c(hcl.colors(6, palette = "YlOrRd", alpha = NULL, rev = F, fixup = TRUE))
+paletf=c(hcl.colors(11, palette = "Purples", alpha = NULL, rev = T, fixup = TRUE))
+ggplot(basemap) +
+  geom_sf(fill="white",color="darkgrey",size=0.5)+
+  geom_sf(data=Hanze_NAp,aes(fill=bin,geometry=geometry),alpha=0.9,color="transparent")+
+  scale_fill_manual(
+    values=palet, breaks=rev(labels), name=legend2)   +
+  coord_sf(xlim = c(min(nco[,1]),max(nco[,1])), ylim = c(min(nco[,2]),max(nco[,2])))+
+  labs(x="Longitude", y = "Latitude")+
+  theme(axis.title=element_text(size=tsize),
+        title = element_text(size=osize),
+        axis.text=element_text(size=osize),
+        panel.background = element_rect(fill = "aliceblue", colour = "grey1"),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=tsize),
+        legend.text = element_text(size=osize),
+        legend.position = "right",
+        panel.grid.major = element_line(colour = "grey70"),
+        panel.grid.minor = element_line(colour = "grey90"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(1, "cm"))
+
+#losses plot:
+Hanze_NAp$losses.sumM=Hanze_NAp$losses.sum/1e6
+paletf=c(hcl.colors(11, palette = "Purples", alpha = NULL, rev = T, fixup = TRUE))
+legend2="Total losses \n(million Euros 2020)"
+palet=c(hcl.colors(11, palette = "viridis", alpha = NULL, rev = F, fixup = TRUE))
+
+limi=c(1e0,1e4)
+Hanze_NAp$losses.sum[which(Hanze_NAp$losses.sum==0)]=NA
+
+ggplot(basemap) +
+  geom_sf(fill="white",color="darkgrey",size=0.5)+
+  geom_sf(data=Hanze_NAp,aes(fill=losses.sumM,geometry=geometry),alpha=0.9,color="transparent")+
+  scale_fill_gradientn(
+    colors=palet,
+    breaks=c(1e0,1e1,1e2,1e3,1e4), labels=c(0,10,100,1000,10000), limits=limi,trans="log",
+    oob = scales::squish,na.value=palet[1], name=legend2)   +
+  coord_sf(xlim = c(min(nco[,1]),max(nco[,1])), ylim = c(min(nco[,2]),max(nco[,2])))+
+  # scale_color_gradientn(
+  #   colors=palet,
+  #   breaks=br,
+  #   oob = scales::squish,na.value="transparent", name=legend2)   +
+  labs(x="Longitude", y = "Latitude")+
+  #guides(fill = guide_coloursteps(barwidth = 1.5, barheight = 14,nbins=5))+
+  theme(axis.title=element_text(size=tsize),
+        title = element_text(size=osize),
+        axis.text=element_text(size=osize),
+        panel.background = element_rect(fill = "aliceblue", colour = "grey1"),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=tsize),
+        legend.text = element_text(size=osize),
+        legend.position = "right",
+        panel.grid.major = element_line(colour = "grey70"),
+        panel.grid.minor = element_line(colour = "grey90"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(1, "cm"))
+
+```
+
+### Map of number of different compound event archetypes by NUTS3
+
+```{r Map of number of different compound event archetypes by NUTS3, fig.width=12, fig.height=8}
+event_MHplot=right_join(event_Nt2,NUTS3,by=c("NUT"="NUTS_ID"))
+event_MHplot$bin=as.character(event_MHplot$ev)
+event_MHplot$bin[which(is.na(event_MHplot$bin))]="0"
+
+###[Plot]
+palet=c(hcl.colors(7, palette = "YlOrRd", alpha = NULL, rev = F, fixup = TRUE))
+labels=c("0","1","2","3","4","5","6")
+legend2="# Event archetypes"
+ggplot(basemap) +
+  geom_sf(fill="white",color="darkgrey",size=0.5)+
+  geom_sf(data=event_MHplot,aes(fill=bin,geometry=geometry),alpha=0.9,color="transparent")+
+  scale_fill_manual(
+    values=palet, breaks=rev(labels), name=legend2)   +
+  coord_sf(xlim = c(min(nco[,1]),max(nco[,1])), ylim = c(min(nco[,2]),max(nco[,2])))+
+  labs(x="Longitude", y = "Latitude")+
+  guides(fill = guide_legend(title.position = "top",nrow = 1,
+                             reverse=T, title.hjust=0.5, 
+                             barwidth = 4, barheight = 1.5)) +
+  theme(axis.title=element_text(size=tsize),
+        title = element_text(size=tsize),
+        axis.text=element_text(size=osize),
+        panel.background = element_rect(fill = "aliceblue", colour = "grey1"),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=tsize),
+        legend.text = element_text(size=osize),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box = "vertical",  # Stack legends vertically
+        panel.grid.major = element_line(colour = "grey70"),
+        panel.grid.minor = element_line(colour = "grey90"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(1, "cm"),
+        legend.key.spacing.x = unit(0, "cm"),
+        legend.text.position = "bottom",
+        legend.margin = margin(t = 0, unit = "cm") )# Reduce the spacing between keys
+```
+
+Map of dominant event archetype
+
+```{r Map of dominant event archetype,  fig.width=12, fig.height=8}
+event_MHplot=inner_join(event_Nt2,NUTS3,by=c("NUT"="NUTS_ID"))
+
+color_events=c("single-flood"="gray","wet-sequence"="dodgerblue4","heat-flood"="darksalmon","drought-flood"="orange","cold-flood"="lightblue","wind-flood"="seagreen")
+
+legend2="Dominant event type"
+# palet=c(hcl.colors(7, palette = "viridis", alpha = NULL, rev = T, fixup = TRUE))
+
+paletf=c(hcl.colors(11, palette = "Purples", alpha = NULL, rev = T, fixup = TRUE))
+ggplot(basemap) +
+  geom_sf(fill="white",color="darkgrey",size=0.5)+
+  geom_sf(data=event_MHplot,aes(fill=dominant,geometry=geometry),alpha=0.9,color="transparent")+
+  scale_fill_manual(
+    values=color_events, name=legend2)   +
+  coord_sf(xlim = c(min(nco[,1]),max(nco[,1])), ylim = c(min(nco[,2]),max(nco[,2])))+
+  labs(x="Longitude", y = "Latitude")+
+  guides(fill = guide_legend(title.position = "top",nrow = 1,
+                             reverse=T, title.hjust=0.5, 
+                             barwidth = 4, barheight = 1.5)) +
+  theme(axis.title=element_text(size=tsize),
+        title = element_text(size=tsize),
+        axis.text=element_text(size=osize),
+        panel.background = element_rect(fill = "aliceblue", colour = "grey1"),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=tsize),
+        legend.text = element_text(size=osize),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box = "vertical",  # Stack legends vertically
+        panel.grid.major = element_line(colour = "grey70"),
+        panel.grid.minor = element_line(colour = "grey90"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(1, "cm"),
+        legend.key.spacing.x = unit(0, "cm"),
+        legend.text.position = "bottom",
+        legend.margin = margin(t = 0, unit = "cm") )# Reduce the spacing between keys
+```
+
+## 3.3 - Impact class analysis
+
+Analysis of the distribution of losses among HANZE recorded flood events between 1981 and 2020.
+
+### Cumulative distribution of losses
+
+```{r Cumulative distribution of losses}
+Events_class$damage=Events_class$Losses..2020.euro.
+Events_class$damage[which(is.na(Events_class$damage))]=0
+
+#division by the number of compound hazard for each event to keep losses consistent with observation
+Events_class$damage[which(Events_class$nh>0)]=Events_class$damage[which(Events_class$nh>0)]/Events_class$nh[which(Events_class$nh>0)]
+Events_class$category=Events_class$event_name
+ld=length(Events_class$eventID)
+damage_data <- data.frame(
+  Event_ID = Events_class$eventID,
+  Damage_Amount = Events_class$damage,
+  Category = Events_class$event_name
+)
+
+total_damage <- sum(damage_data$Damage_Amount)
+total_dama_c=sum(Hanze_flood_1980$Losses..2020.euro.,na.rm=T)
+
+cumulative_percentages <- numeric(nrow(damage_data))
+proportions <- matrix(nrow = nrow(damage_data), ncol = length(unique(damage_data$Category)))
+damage_data=damage_data[order(-damage_data$Damage_Amount),]
+
+for (i in 1:nrow(damage_data)) {
+  cumulative_damage <- sum(damage_data %>% arrange(desc(Damage_Amount)) %>% slice(1:i) %>% pull(Damage_Amount))
+  cumulative_percentage <- (cumulative_damage / total_damage) * 100
+  cumulative_percentages[i] <- cumulative_percentage
+  
+  cumulative_categories <- damage_data %>% arrange(desc(Damage_Amount)) %>% slice(1:i)
+  proportions[i, ] <- sapply(unique(damage_data$Category), function(j) {
+    sum(cumulative_categories$Damage_Amount[cumulative_categories$Category == j]) / cumulative_damage
+  })
+}
+nunik=length(unique(Events_class$eventID))
+nu=length((Events_class$eventID))
+cumulative_length <- seq(1, ld)
+plot(cumulative_length,cumulative_percentages, ylab="cumulative loss percentages",lwd=2.5,
+     xlab="cumulative numver of events", type="n", ylim=c(0,100),main=paste0("loss distribution in all compound events (n=",nu,")"))
+grid(nx = NULL, ny = NULL,
+     lty = 2, col = "gray", lwd = 1)
+lines(cumulative_length,cumulative_percentages, lwd=2.5)
+
+colnames(proportions)=unique(damage_data$Category)
+damage_data=data.frame(cumulative_length,cumulative_percentages,proportions)
+
+```
+
+### Proportion of different event types above a given loss percentile
+
+```{r}
+# Calculate percentiles
+Events_class2=Events_class[which(Events_class$damage>0),]
+percentiles <- c(0,seq(1, 99, by = 1))
+damage_percentiles <- quantile(Events_class2$damage, probs = percentiles / 100)
+damage_percentiles[1]<-0
+#attribute bins to Events_class
+Events_class$bins=0
+Events_class$bins[which(Events_class$damage>damage_percentiles[1] & Events_class$damage<damage_percentiles[51])]=1
+Events_class$bins[which(Events_class$damage>=damage_percentiles[51] & Events_class$damage<damage_percentiles[91])]=2
+Events_class$bins[which(Events_class$damage>=damage_percentiles[91] & Events_class$damage<damage_percentiles[100])]=3
+Events_class$bins[which(Events_class$damage>=damage_percentiles[100])]=4
+
+proportions_data <- calculate_proportions(df=Events_class, percentiles, damage_percentiles)
+
+# Plot
+ggplot(proportions_data, aes(x = percentile/100, y = proportion, color = category, group = category)) +
+  geom_line(linewidth = 1) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Proportion of Events Above Percentiles by Category Among All Events",
+       x = "Loss Percentile",
+       y = "Proportion Above Percentile") +
+  scale_color_manual(
+    values=color_events) +
+  coord_trans(x = "exp") +
+  theme(axis.title=element_text(size=16, face="bold"),
+        axis.text = element_text(size=12),
+        panel.background = element_rect(fill = "white", colour = "white"),
+        panel.grid = element_blank(),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=14),
+        legend.text = element_text(size=12),
+        panel.grid.major = element_line(colour = "grey60"),
+        panel.grid.minor.y = element_line(colour = "grey80",linetype="dashed"),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(.8, "cm"))
+```
+
+### Distribution of different event types by impact (losses) classes:
+
+-   top 1%,
+-   2/10%,
+-   10/50%
+-   remaining 50%
+-   no recorded losses
+
+```{r Distribution of different event types by impact (losses) classes, fig.width=12, fig.height=8}
+#bins of top 1%, 2/10%, 10/50%, remaining 50%
+proportions_data$bins=4
+proportions_data$bins[which(proportions_data$percentile<99 & proportions_data$percentile>=90)]=3
+proportions_data$bins[which(proportions_data$percentile<90 & proportions_data$percentile>=50)]=2
+proportions_data$bins[which( proportions_data$percentile<50)]=1
+proportions_data$bins[which( proportions_data$percentile<1)]=0
+
+#plot by bins
+frequencies <- Events_class %>%
+  group_by(bins,event_name) %>%
+  summarise(mx =length(nh), .groups = 'drop')
+
+frequenciesCB <- Events_class %>%
+  group_by(bins) %>%
+  summarise(mx =length(eventID), .groups = 'drop')
+
+mb=match(frequencies$bins,frequenciesCB$bins)
+frequencies$lbin=frequenciesCB$mx[mb]
+frequencies$prop=frequencies$mx/frequencies$lbin
+frequencies2 <- proportions_data %>%
+  group_by(bins) %>%
+  summarise(mx = max(damage_perc),mx2=max(length), .groups = 'drop')
+
+frequencies2$mx3=frequencies2$mx2
+for (ic in 3:1){
+  frequencies2$mx3[ic]=frequencies2$mx3[ic]-frequencies2$mx2[ic+1]
+}
+
+impact_leg=c("no recorded impact","lower 50%","50% - 10%","10% - 1%"," top 1%")
+ggplot() +
+  geom_bar(data=frequencies, aes(x = bins, y = prop, fill = event_name),stat = "identity",color="black") +
+  geom_line(data=frequencies2,aes(x=bins,y=mx),lwd=1)+
+  geom_point(data=frequencies2,aes(x=bins,y=mx),pch=21,fill="white",stroke=1,size=2)+
+  labs(
+    x = "Impact class",
+    y = "Proportion",
+    fill = "Event types") +
+  scale_x_continuous(breaks=c(0,1,2,3,4),labels=impact_leg)+
+  scale_y_continuous(
+    name = "Proportion of events",
+    breaks=seq(0,1,.2),
+    minor_breaks = seq(0,1,.1),
+    sec.axis = sec_axis( transform=~.*100, name="Cumulatice percentage of total losses",
+                         breaks=seq(0,100,20))
+  )+
+  scale_fill_manual(
+    values=color_events) +
+  geom_text(data=frequencies, aes(x=bins, y=1.05, label=lbin), col='black', size=4,fontface="bold")+
+  theme(axis.title=element_text(size=16, face="bold"),
+        axis.text = element_text(size=14),
+        panel.background = element_rect(fill = "white", colour = "white"),
+        panel.grid = element_blank(),
+        panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+        legend.title = element_text(size=16),
+        legend.text = element_text(size=14),
+        legend.key = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.size = unit(.8, "cm"))
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

@@ -1,34 +1,7 @@
-#Library calling
-suppressWarnings(suppressMessages(library(ncdf4)))
-suppressWarnings(suppressMessages(library(sf)))
-suppressWarnings(suppressMessages(library(rnaturalearth)))
-suppressWarnings(suppressMessages(library(rnaturalearthdata)))
-suppressWarnings(suppressMessages(library(rgeos)))
-suppressWarnings(suppressMessages(library(dplyr)))
-library(Kendall)
-library(biscale)
-library(cowplot)
-library(ggpubr)
-library(ggridges)
-library(ggplot2)
-library(viridis)
-library(hrbrthemes)
-library(tidyverse)
-library(raster)
-library(modifiedmk)
-library(ks)
-library(pracma)
-library(data.table)
-library(RtsEva)
-library(xts)
-library(regions)
-library(dplyr)
-library(tidyr)
-library(ggbeeswarm)
-library(data.table)
 
+source("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisk_codes/functions_CFRisks.R")
 #Set data directory
-hydroDir<-("D:/tilloal/Documents/LFRuns_utils/data")
+hydroDir<-("D:/tilloal/Documents/01_Projects/RiskDynamics/CFRisks_data/")
 
 
 #Load primary inputs -----
@@ -38,8 +11,6 @@ for( Nsq in 1:88){
   rspace= read.csv(paste0(hydroDir,"/subspace_efas.csv"))
   rspace=rspace[,-1]
   nrspace=rspace[Nsq,]
-  #outletname="outletsv8_hybas07_01min"
-  #outletname="outlets_hybas09_01min"
   outletname="efas_rnet_100km_01min"
   
   outhybas=outletopen(hydroDir,outletname,nrspace)
@@ -49,22 +20,19 @@ for( Nsq in 1:88){
     outhybas$outlets=seq((Idstart+1),(Idstart+length(outhybas$outlets)))
     outhybas$outl2=seq((Idstart2+1),(Idstart2+length(outhybas$outlets)))
     outhybas$latlong=paste(round(outhybas$Var1,4),round(outhybas$Var2,4),sep=" ")
-    #outcut=which(!is.na(match(outhybas$outlets,parlist$catchment)))
-    # zebi=seq(parlist$catchment[1],parlist$catchment[length(parlist$catchment)])
-    # outcut=which(!is.na(match(outhybas$outlets,zebi)))
     outhloc=outhybas
     outf=rbind(outf,outhloc)
   }
 }
 
-NUTS3 <- read_sf(dsn = paste0(hydroDir,"/Countries/NUTS3/NUTS3_modified.shp"))
-GridNUTS3=raster( paste0(hydroDir,"/Countries/NUTS3/NUTS3_Raster3ID.tif"))
+NUTS3 <- read_sf(dsn = paste0(hydroDir,"/NUTS3/NUTS3_modified.shp"))
+GridNUTS3=raster( paste0(hydroDir,"/NUTS3/NUTS3_Raster3ID.tif"))
 GN3=as.data.frame(GridNUTS3,xy=T)
 GN3=GN3[which(!is.na(GN3[,3])),]
 GN3$llcoord=paste(round(GN3$x,4),round(GN3$y,4),sep=" ")
 GN3_riv=right_join(GN3,outf,by= c("llcoord"="latlong"))
 
-GridNUTS2=raster( paste0(hydroDir,"/Countries/NUTS3/NUTS3_Raster2ID.tif"))
+GridNUTS2=raster( paste0(hydroDir,"/NUTS3/NUTS3_Raster2ID.tif"))
 GN2=as.data.frame(GridNUTS2,xy=T)
 GN2=GN2[which(!is.na(GN2[,3])),]
 GN2$llcoord=paste(round(GN2$x,4),round(GN2$y,4),sep=" ")
@@ -77,14 +45,14 @@ GNUTS3sf=fortify(NUTS3)
 GNFx=GNF[which(is.na(GNF$NUTS3_Raster3ID)),]
 
 #Load old and new NUTS3 region IDs
-NUTS3_2010 <- read_sf(dsn = paste0(hydroDir,"/Countries/NUTS3/Regions_v2010_simplified.shp"))
-NUTS3_2021 <- read_sf(dsn = paste0(hydroDir,"/Countries/NUTS3/Regions_v2021_simplified.shp"))
+NUTS3_2010 <- read_sf(dsn = paste0(hydroDir,"/NUTS3/Regions_v2010_simplified.shp"))
+NUTS3_2021 <- read_sf(dsn = paste0(hydroDir,"/NUTS3/Regions_v2021_simplified.shp"))
 
 cores=nuts_changes[which(nuts_changes$typology=="nuts_level_3"),]
 
 
 ####load HANZE event set to do a first matching####
-Hanze_flood=read.csv(file="D:/tilloal/Documents/01_Projects/RiskDynamics/Data/HANZE_events.csv")
+Hanze_flood=read.csv(file=paste0(hydroDir,"HANZE/HANZE_events.csv"))
 
 #I need to create a vector of affected regions for each event
 list_of_word_vectors <- lapply(Hanze_flood$Regions.affected..v2021., function(x) unlist(strsplit(x, ";")))
@@ -95,14 +63,14 @@ vectors_2010=unlist(list_of_word_vectors2)
 vectors_2010=unique(vectors_2010)
 N1021=cbind(vectors_2010,vectors_2021)
 
-#load upstream area
-main_path = 'D:/tilloal/Documents/06_Floodrivers/'
-valid_path = paste0(main_path,'DataPaper/')
-outletname="/GIS/upArea_European_01min.nc"
-dir=valid_path
+
+#load UpArea
+outletname="upArea_European_01min.nc"
+dir=hydroDir
 outf$idlalo=paste(outf$idlo, outf$idla, sep=" ")
-UpArea=UpAopen(valid_path,outletname,outf)
+UpArea=UpAopen(hydroDir,outletname,outf)
 head(UpArea)
+
 
 #Plot parameters
 palet2=c(hcl.colors(9, palette = "Blues", alpha = NULL, rev = TRUE, fixup = TRUE))
@@ -127,19 +95,16 @@ NutVector=NUTS3$NUTS_ID
 
 #Initialize time vector
 NRtime=seq.Date(as.Date("1980-01-01"),as.Date("2020-12-31"), by="day")
-NRtime=as.POSIXct(NRtime2)
+NRtime=as.POSIXct(NRtime)
 
 #Load compounding hazards data
-fl_events=read.csv(file="D:/tilloal/Documents/01_Projects/RiskDynamics/Data/multihz_data/fl_nuts3_v1.csv")
+fl_events=read.csv(file=paste0(hydroDir,"/hazard_data/fl_nuts3_v1.csv"))
+fl_events$enddate=as.POSIXct(fl_events$enddate)
 fl_events$stardate=fl_events$enddate-(fl_events$duration*3600*24)
-
-dr_events=read.csv(file="D:/tilloal/Documents/01_Projects/RiskDynamics/Data/multihz_data/dr_nuts3_v1.csv")
-
-hw_events=read.csv(file="D:/tilloal/Documents/01_Projects/RiskDynamics/Data/multihz_data/hw_nuts3_v1.csv")
-
-cw_events=read.csv(file="D:/tilloal/Documents/01_Projects/RiskDynamics/Data/multihz_data/cw_nuts3_v1.csv")
-
-ws_events=read.csv(file="D:/tilloal/Documents/01_Projects/RiskDynamics/Data/multihz_data/wgust_nuts3_995.csv")
+dr_events=read.csv(file=paste0(hydroDir,"/hazard_data/dr_nuts3_v1.csv"))
+hw_events=read.csv(file=paste0(hydroDir,"/hazard_data/hw_nuts3_v1.csv"))
+cw_events=read.csv(ffile=paste0(hydroDir,"/hazard_data/cw_nuts3_v1.csv"))
+ws_events=read.csv(file=paste0(hydroDir,"/hazard_data/wgust_nuts3_995.csv"))
 ws_events=ws_events[-which(ws_events$duration<1),]
 ws_events=ws_events[,-5]
 
@@ -162,9 +127,10 @@ if (initF==T){
     for (id in 1:length(NutVector)){
       print(id)
       NUTl=NutVector[id]
-      myloc=NR_Qd_total[,id]
-      if (length(which(!is.na(myloc)))>0){
-        ms=data.frame(time=NRtime,data=myloc)
+      #myloc=NR_Qd_total[,id]
+      High_events=fl_events[which(fl_events$NUT==NUTl),]
+      if (length(High_events$X)>0){
+        #ms=data.frame(time=NRtime,data=myloc)
         High_events=fl_events[which(fl_events$NUT==NUTl),]
         matches <- lapply(list_of_word_vectors, function(vector) NUTl %in% vector)
         tm=which(matches==T)
@@ -236,6 +202,9 @@ if (initF==T){
   plot(HitF[,2],type="o")
   abline(v=optim[1])
 }
+
+#Optimal time lag is 4 days
+
 ## Matching of flood event with high flows with optimal lag: 4 days ----
 w=4
 print(w)
@@ -400,7 +369,7 @@ for (w in windows){
       for (e in 1:length(Hanze_Nut$ï..ID)){
         #difference between end date of sim and start date of obs
         d1=(as.Date(High_events$enddate)-as.Date(Hanze_Nut$Start.date[e]))+1
-        #modelled event has to end at most 4 days before observed starts
+        #modelled event has to end at minimum 4 days before observed starts
         #modelled event has to start at most xx days before observed event has started
         #from flood matching section
         keep1=which(d1<=(-4) & d1>(-wflood))
@@ -539,7 +508,6 @@ for (w in c(1:4)){
   print(w)
   Events_prefflood=inner_join(list_POTh_large[[w]],Hanze_flood_1980, by=c("eventID"="ï..ID"))
   
-  
   #verification: preflood with flood events
   df_POTFlood$NEID=paste0(df_POTFlood$NUTID,df_POTFlood$eventID)
   matF=na.omit(match(df_POTFlood$NEID,Events_prefflood$NEID))
@@ -564,10 +532,36 @@ for (w in c(1:4)){
   Hanze_spRat=full_join(Hanze_SOflood,Hanze_SDflood,by="NUT")
   Hanze_spRat$succerat=Hanze_spRat$he.y/Hanze_spRat$he.x*100
   
-  #Make a map out of HANZE_spRat
-  Hanze_Pflood=aggregate(list(time=Events_prefflood$threshold),
-                         by = list(NID=Events_prefflood$eventID),
-                         FUN = function(x) c(l=length(x)))
+  Hanze_spRat=inner_join(Hanze_spRat,GNUTS3sf, by=c("NUT"="NUTS_ID"))
+ 
+  
+  legend="Detection rate (%)"
+  palet=c(hcl.colors(11, palette = "YlGnBu", alpha = NULL, rev = T, fixup = TRUE))
+  ggplot(basemap) +
+    geom_sf(fill="white",color="darkgrey",size=0.5)+
+    geom_sf(data=Hanze_spRat,aes(fill=succerat,geometry=geometry),alpha=0.9,color="transparent")+
+    # scale_fill_manual(
+    #   values=palet, breaks=rev(labels), name=legend2)   +
+    coord_sf(xlim = c(min(nco[,1]),max(nco[,1])), ylim = c(min(nco[,2]),max(nco[,2])))+
+    scale_fill_gradientn(
+      colors=palet,
+      oob = scales::squish,na.value="transparent", name=legend)   +
+    labs(x="Longitude", y = "Latitude")+
+    #guides(fill = guide_coloursteps(barwidth = 1.5, barheight = 14,nbins=5))+
+    theme(axis.title=element_text(size=tsize),
+          title = element_text(size=osize),
+          axis.text=element_text(size=osize),
+          panel.background = element_rect(fill = "aliceblue", colour = "grey1"),
+          panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
+          legend.title = element_text(size=tsize),
+          legend.text = element_text(size=osize),
+          legend.position = "right",
+          panel.grid.major = element_line(colour = "grey70"),
+          panel.grid.minor = element_line(colour = "grey90"),
+          legend.key = element_rect(fill = "transparent", colour = "transparent"),
+          legend.key.size = unit(1, "cm"))
+  
+  ggsave(paste0("D:/tilloal/Documents/01_Projects/RiskDynamics/Plots/MH_events_8120_HANZE.jpg"), width=30, height=20, units=c("cm"),dpi=300) 
   
   #aggregate by event ID
   Hanze_flood_BN$NEID=paste0(Hanze_flood_BN$ï..ID,Hanze_flood_BN$NUTl)
@@ -790,8 +784,9 @@ for (w in c(1:4)){
   uni=unique(event_class2$event_name)
   event_class2$event_name <- factor(event_class2$event_name, 
                                     levels =uni)
-
   event_class2$nhcat=as.character(event_class2$nh)
+  list_eventc2=c(list_eventc2,list(event_class2))
+  
   palet=c(hcl.colors(5, palette = "YlOrRd", alpha = NULL, rev = T, fixup = TRUE))
   ###[Supplement Plot] - plot pf detected multi-hazard events before attribution to archetypes
   
@@ -923,11 +918,6 @@ Hanze_flood_BN$RPflood=Hanze_events_RP$NEID[rpm]
 taglist=c()
 event_classic=c()
 for (w in 2:4){
-  event_all1=list_eventc2[[w]]
-  aev=length(unique(event_all1$eventID))
-  event_mh=event_all1[which(event_all1$nh>=2),]
-  mhev=unique(event_mh$eventID)
-  
   event_all1=list_eventc2[[w]]
   aev=length(unique(event_all1$eventID))
   event_mh=event_all1[which(event_all1$nh>=2),]
