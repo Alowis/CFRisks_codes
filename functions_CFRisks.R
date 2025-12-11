@@ -15,7 +15,7 @@ get_POTdata_high <- function(pcts, ms) {
   pks_and_locs <- pracma::findpeaks(ms[, 2], minpeakdistance = 7, minpeakheight = thrsd)
   
   # Extract relevant peak information
-  pks <- pks_and_locs[, 1]  # Peak values
+  pks <- pks_and_locs[, 1]  # Peak valuesdr_nuts3_v1.csv
   locs <- pks_and_locs[, 2] # Indexes of peaks
   st <- pks_and_locs[, 3]   # Start indexes of peaks
   end <- pks_and_locs[, 4]  # End indexes of peaks
