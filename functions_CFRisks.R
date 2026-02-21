@@ -555,9 +555,12 @@ process_events <- function(events_df, reference_df, event_idx, window, nut_id, h
                            id_col = "eid") {
 
   # Calculate date differences
-  d1 <- as.Date(events_df[[endpeaks_col]]) - as.Date(reference_df[[start_date_col]][event_idx]) + 1
-  d2 <- as.Date(events_df[[stpeaks_col]]) - as.Date(reference_df[[end_date_col]][event_idx]) + 1
-
+  # d1 <- as.Date(events_df[[endpeaks_col]]) - as.Date(reference_df[[start_date_col]][event_idx]) 
+  # d2 <- as.Date(events_df[[stpeaks_col]]) - as.Date(reference_df[[end_date_col]][event_idx]) 
+  d1<- round(difftime(events_df[[endpeaks_col]],(reference_df[[start_date_col]])[event_idx], unit="days"))
+  d2<- round(difftime(events_df[[stpeaks_col]],(reference_df[[end_date_col]])[event_idx], unit="days"))
+  # min(abs((d3)))
+  # (events_df[[stpeaks_col]])[which(d3==1)]
   # Determine which events to keep
   if (haz =="flood"){
     keep_indices <- which(d1 <= -4 & d1 >= (-window))
@@ -584,7 +587,7 @@ process_events <- function(events_df, reference_df, event_idx, window, nut_id, h
   if (length(keep_indices) > 0) {
     events_to_keep <- events_df[keep_indices, ]
     events_to_keep$dtime1 <- d1[keep_indices]
-    events_to_keep$dtime2 <- d1[keep_indices]
+    events_to_keep$dtime2 <- d2[keep_indices]
     events_to_keep$NUTID <- nut_id
     events_to_keep$eventStart <- reference_df[[start_date_col]][event_idx]
     events_to_keep$eventEnd <- reference_df[[end_date_col]][event_idx]

@@ -29,11 +29,16 @@ NUTS3_2021 <- read_sf(dsn = paste0(hydroDir,"/NUTS3/Regions_v2021_simplified.shp
 ####load HANZE event set to do a first matching####
 Hanze_flood=read.csv(file=paste0(hydroDir,"HANZE/HANZE_events.csv"))
 
+
+#Matching of flood events with associated hazards
+Hanze_flood_1980=Hanze_flood[which(Hanze_flood$Year>1980),]
+Hanze_flood_1980=Hanze_flood_1980[-which(Hanze_flood_1980$Type=="Coastal"),]
+
 #Vector of affected regions for each event
-list_of_word_vectors <- lapply(Hanze_flood$Regions.affected..v2021., function(x) unlist(strsplit(x, ";")))
+list_of_word_vectors <- lapply(Hanze_flood_1980$Regions.affected..v2021., function(x) unlist(strsplit(x, ";")))
 vectors_2021=unlist(list_of_word_vectors)
 vectors_2021=unique(vectors_2021)
-list_of_word_vectors2 <- lapply(Hanze_flood$Regions.affected..v2010., function(x) unlist(strsplit(x, ";")))
+list_of_word_vectors2 <- lapply(Hanze_flood_1980$Regions.affected..v2010., function(x) unlist(strsplit(x, ";")))
 vectors_2010=unlist(list_of_word_vectors2)
 vectors_2010=unique(vectors_2010)
 N1021=cbind(vectors_2010,vectors_2021)
@@ -60,9 +65,11 @@ basemap=w2
 fl_events=read.csv(file=paste0(hydroDir,"/hazard_data/fl_nuts3_v1.csv"))
 fl_events$enddate=as.POSIXct(fl_events$enddate)
 fl_events$stardate=fl_events$enddate-(fl_events$duration*3600*24)
+
 dr_events=read.csv(file=paste0(hydroDir,"/hazard_data/dr_nuts3_v1.csv"))
 dr_events$stardate=as.Date(dr_events$stardate, format="%d/%m/%Y")
 dr_events$enddate=as.Date(dr_events$enddate, format="%d/%m/%Y")
+dr_events<-dr_events[which(dr_events$cluster_length>=10),]
 
 hw_events=read.csv(file=paste0(hydroDir,"/hazard_data/hw_nuts3_v1.csv"))
 hw_events$stardate=as.Date(hw_events$stardate, format="%d/%m/%Y")
@@ -78,10 +85,6 @@ ws_events$enddate=as.Date(ws_events$enddate, format="%d/%m/%Y")
 ws_events=ws_events[-which(ws_events$duration<1),]
 ws_events=ws_events[,-5]
 
-#Matching of flood events with associated hazards
-Hanze_flood_1980=Hanze_flood[which(Hanze_flood$Year>1980),]
-Hanze_flood_1980=Hanze_flood_1980[-which(Hanze_flood_1980$Type=="Coastal"),]
-
 NutVector=NUTS3$NUTS_ID
 ```
 
@@ -89,7 +92,7 @@ NutVector=NUTS3$NUTS_ID
 
 The Initial loop explores lag from 1 to 15 days prior to flood event and identifies the optimal window to match historical flood events and aggregated river flow peaks at NUTS3 level.
 
-```{r Optimal flood detection window, eval=FALSE}
+```{r Optimal flood detection window1, eval=FALSE}
 initF=T
 if (initF==T){
   HitF=c()
@@ -107,8 +110,8 @@ if (initF==T){
         High_events=fl_events[which(fl_events$NUT==NUTl),]
         matches <- lapply(list_of_word_vectors, function(vector) NUTl %in% vector)
         tm=which(matches==T)
-        Hanze_Nut=Hanze_flood[tm,]
-        Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
+        Hanze_Nut=Hanze_flood_1980[tm,]
+        #Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
         if(length(Hanze_Nut$Country.code)>0){
           Hanze_bNut=data.frame(NUTl,Hanze_Nut)
           Hanze_flood_M1=rbind(Hanze_flood_M1,Hanze_bNut)
@@ -163,8 +166,21 @@ if (initF==T){
     HitF=rbind(HitF,Hits)
     
   }
-  x_values=HitF[,1]
-  y_values=HitF[,2]
+}
+```
+
+```{r}
+#open csv form python
+Hdbug<-read.csv(file=paste0(hydroDir,"/matchdebbug.csv"))
+
+idshit<-which(is.na(match(Hanze_DFmatch$NID,Hdbug$eventID)))
+merd<-Hanze_DFmatch[idshit,]
+```
+
+
+```{r Optimal flood detection window, eval=FALSE}
+x_values=HitF[,1]
+y_values=HitF[,2]
   
   #ratio of new detected events in NUTS over new detected POTs
   #look for the elbow in the curve that would signify that detected POT after that do not correspond to the event.
@@ -192,7 +208,7 @@ legend("bottomright",  # Position of the legend
        pch=1,  # Point type
        bty="n")  # No box around the legend
 
-}
+
 ```
 
 Optimal time lag from previous code chunk is 4 days, we then keep only that time lag for the next step.
@@ -205,12 +221,13 @@ Hanze_flood_BN=c()
 list_POTFl_large=c()
 for (id in 1:length(NutVector)){
   NUTl=NutVector[id]
+  # NUTl="DED41"
   High_events=fl_events[which(fl_events$NUT==NUTl),]
   if (length(High_events$X)>0){
     matches <- lapply(list_of_word_vectors, function(vector) NUTl %in% vector)
     tm=which(matches==T)
-    Hanze_Nut=Hanze_flood[tm,]
-    Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
+    Hanze_Nut=Hanze_flood_1980[tm,]
+    #Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
     if(length(Hanze_Nut$Country.code)>0){
       Hanze_bNut=data.frame(NUTl,Hanze_Nut)
       Hanze_flood_BN=rbind(Hanze_flood_BN,Hanze_bNut)
@@ -296,6 +313,25 @@ df_POTFlood=df_POTFlood_large
           legend.key = element_rect(fill = "transparent", colour = "transparent"),
           legend.key.size = unit(1, "cm"))
 ```
+```{r}
+allid=(Hanze_flood_1980$ï..ID)
+
+mid=(unique(df_POTFlood_large$eventID))
+
+length(which(is.na(match(allid,mid))))
+
+
+#load event from python
+df_FloodPy<-read.csv("K:/projects/CLIMEX/CFRisks/CFRisks_data/flood_matched.csv")
+
+df_FloodPy$NuidT<-paste0(df_FloodPy$NUT,df_FloodPy$eventID,df_FloodPy$dtime2)
+df_POTFlood_large$dtime1=round(df_POTFlood_large$dtime1)
+df_POTFlood_large$dtime2=round(df_POTFlood_large$dtime2)
+df_POTFlood_large$NuidT<-paste0(df_POTFlood_large$NUT,                             df_POTFlood_large$eventID,df_POTFlood_large$dtime2)
+
+mpshit=full_join(df_FloodPy,df_POTFlood_large,by=c("NuidT"))
+```
+
 # 3. Detection of compound events with different temporal windows
 
 Four different temporal windows are tested:
@@ -384,8 +420,8 @@ for (w in windows){
       WS_events=ws_events[which(ws_events$nuts_id==NUTl),]
       matches <- lapply(list_of_word_vectors, function(vector) NUTl %in% vector)
       tm=which(matches==T)
-      Hanze_Nut=Hanze_flood[tm,]
-      Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
+      Hanze_Nut=Hanze_flood_1980[tm,]
+      #Hanze_Nut=Hanze_Nut[which(Hanze_Nut$Year>1980),]
       #now check overlap with mt detected anomalies
       Hanze_Nut$eid=Hanze_Nut$ï..ID
       df_POTh_keep=c()
@@ -714,7 +750,7 @@ for (w in c(1:4)){
   lpalett=length(unique(event_class2$nhcat))
   palet=c(hcl.colors(lpalett, palette = "YlOrRd", alpha = NULL, rev = T, fixup = TRUE))
   current_window=windows[w]
-  plot1[[w]]<- ggplot(event_class2, aes(x = event_name,fill = nhcat))+ 
+  plot1[[w]]<- ggplot(event_class2, aes(x = fct_rev(fct_infreq(event_name)),fill = nhcat))+ 
     geom_bar() + 
     coord_flip()+
     scale_fill_manual(
@@ -722,7 +758,7 @@ for (w in c(1:4)){
     guides(fill = guide_legend(title.position = "top",nrow = 1,
                                reverse=F, title.hjust=0.5, 
                                barwidth = 3, barheight = 1.5)) +
-    scale_y_continuous(name="Number of events",expand = expansion(mult = c(0, 0)))+
+    scale_y_continuous(name="Number of events",breaks=seq(0,400, by=50),expand = expansion(mult = c(0, 0)))+
     scale_x_discrete(name="Compound event name")+
     theme(axis.title=element_text(size=14, face="bold"),
           axis.text = element_text(size=12),
@@ -747,6 +783,13 @@ for (w in c(1:4)){
     print(plot1[[w]])
 }
 ```
+
+
+```{r}
+list_test<-list_eventc2[[1]]
+sum(list_test$predrought)
+```
+
 Reorganize compound events into five compound events archetypes:
 
 | Compound event archetype | Definition                                                    | Hazard interrelation type          |
@@ -759,7 +802,8 @@ Reorganize compound events into five compound events archetypes:
 
 Recorded flood events with multiple matching compound hazards are duplicated.
 
-```{r Classification into conpoud events archetypes}
+```{r Classification into conpound events archetypes}
+col_locs=c("predrought","preflood","preheat","precold","prewind")
 taglist=c()
 event_classic=c()
 event_multlist=c()

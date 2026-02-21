@@ -203,8 +203,31 @@ if (initF==T){
   abline(v=optim[1])
 }
 
-#Optimal time lag is 4 days
+llpot=c()
+llEv=c()
+for (id in c(1:16)){
+  POT_df=list_POTFl_large[[id]]
+  lpot=length(POT_df$X)
+  #Summary of matched flood events
+  Hanze_Dflood=aggregate(list(time=POT_df$threshold),
+                         by = list(NID=POT_df$eventID,RID=POT_df$NUTID),
+                         FUN = function(x) c(l=length(x)))
+  Hanze_Dflood$NEID=paste0(Hanze_Dflood$NID,Hanze_Dflood$RID)
+  Hanze_DFmatch=inner_join(Hanze_Dflood,Hanze_flood_M1,by="NEID")
+  lEv=length(Hanze_DFmatch$NID)
+  llpot=c(llpot,lpot)
+  llEv=c(llEv,lEv)
+  
+}
+plot(llpot)
+plot(llEv)
+dpot=diff(llpot)
+dEv=diff(llEv)
+dev2=cumsum(dEv)
+plot(dpot, type="o")
+plot((dEv/dpot), type="o")
 
+#Optimal time lag is 4 days
 ## Matching of flood event with high flows with optimal lag: 4 days ----
 w=4
 print(w)
@@ -508,6 +531,7 @@ for (w in c(1:4)){
   print(w)
   Events_prefflood=inner_join(list_POTh_large[[w]],Hanze_flood_1980, by=c("eventID"="ï..ID"))
   
+  
   #verification: preflood with flood events
   df_POTFlood$NEID=paste0(df_POTFlood$NUTID,df_POTFlood$eventID)
   matF=na.omit(match(df_POTFlood$NEID,Events_prefflood$NEID))
@@ -532,36 +556,10 @@ for (w in c(1:4)){
   Hanze_spRat=full_join(Hanze_SOflood,Hanze_SDflood,by="NUT")
   Hanze_spRat$succerat=Hanze_spRat$he.y/Hanze_spRat$he.x*100
   
-  Hanze_spRat=inner_join(Hanze_spRat,GNUTS3sf, by=c("NUT"="NUTS_ID"))
- 
-  
-  legend="Detection rate (%)"
-  palet=c(hcl.colors(11, palette = "YlGnBu", alpha = NULL, rev = T, fixup = TRUE))
-  ggplot(basemap) +
-    geom_sf(fill="white",color="darkgrey",size=0.5)+
-    geom_sf(data=Hanze_spRat,aes(fill=succerat,geometry=geometry),alpha=0.9,color="transparent")+
-    # scale_fill_manual(
-    #   values=palet, breaks=rev(labels), name=legend2)   +
-    coord_sf(xlim = c(min(nco[,1]),max(nco[,1])), ylim = c(min(nco[,2]),max(nco[,2])))+
-    scale_fill_gradientn(
-      colors=palet,
-      oob = scales::squish,na.value="transparent", name=legend)   +
-    labs(x="Longitude", y = "Latitude")+
-    #guides(fill = guide_coloursteps(barwidth = 1.5, barheight = 14,nbins=5))+
-    theme(axis.title=element_text(size=tsize),
-          title = element_text(size=osize),
-          axis.text=element_text(size=osize),
-          panel.background = element_rect(fill = "aliceblue", colour = "grey1"),
-          panel.border = element_rect(linetype = "solid", fill = NA, colour="black"),
-          legend.title = element_text(size=tsize),
-          legend.text = element_text(size=osize),
-          legend.position = "right",
-          panel.grid.major = element_line(colour = "grey70"),
-          panel.grid.minor = element_line(colour = "grey90"),
-          legend.key = element_rect(fill = "transparent", colour = "transparent"),
-          legend.key.size = unit(1, "cm"))
-  
-  ggsave(paste0("D:/tilloal/Documents/01_Projects/RiskDynamics/Plots/MH_events_8120_HANZE.jpg"), width=30, height=20, units=c("cm"),dpi=300) 
+  #Make a map out of HANZE_spRat
+  Hanze_Pflood=aggregate(list(time=Events_prefflood$threshold),
+                         by = list(NID=Events_prefflood$eventID),
+                         FUN = function(x) c(l=length(x)))
   
   #aggregate by event ID
   Hanze_flood_BN$NEID=paste0(Hanze_flood_BN$ï..ID,Hanze_flood_BN$NUTl)
@@ -784,9 +782,8 @@ for (w in c(1:4)){
   uni=unique(event_class2$event_name)
   event_class2$event_name <- factor(event_class2$event_name, 
                                     levels =uni)
+
   event_class2$nhcat=as.character(event_class2$nh)
-  list_eventc2=c(list_eventc2,list(event_class2))
-  
   palet=c(hcl.colors(5, palette = "YlOrRd", alpha = NULL, rev = T, fixup = TRUE))
   ###[Supplement Plot] - plot pf detected multi-hazard events before attribution to archetypes
   
@@ -918,6 +915,11 @@ Hanze_flood_BN$RPflood=Hanze_events_RP$NEID[rpm]
 taglist=c()
 event_classic=c()
 for (w in 2:4){
+  event_all1=list_eventc2[[w]]
+  aev=length(unique(event_all1$eventID))
+  event_mh=event_all1[which(event_all1$nh>=2),]
+  mhev=unique(event_mh$eventID)
+  
   event_all1=list_eventc2[[w]]
   aev=length(unique(event_all1$eventID))
   event_mh=event_all1[which(event_all1$nh>=2),]
