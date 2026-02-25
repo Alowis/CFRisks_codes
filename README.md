@@ -2,7 +2,7 @@
 
 Code repository associated with the paper:
 
-> **Compounding hazards increase flood economic losses across Europe**
+> **Compounding hazards increase flood economic losses across Europe** https://www.researchsquare.com/article/rs-7075867/v1
 
 This repository contains the data processing scripts and analysis notebooks used to:
 
