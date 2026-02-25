@@ -48,9 +48,8 @@ For reuse, please refer to the original data providers for access conditions and
 ```
 ├── data/                    # Input and intermediate datasets (if permitted)
 ├── output/                  # Generated figures and aggregated tables
-├── trend_analysis.ipynb     # Notebook to reproduce the event-level analysis and figures
+├── trend_analysis.ipynb     # Notebook to march HANZE flood events with compound hazards, and reproduce the event-level analysis and figures
 ├── ml_analysis.ipynb        # Notebook to reproduce to the nuts-level machine learning analysis 
-├── matching_workflow.py     # Hazard-to-flood matching routines
 ├── utils.py                  # Helper functions
 
 ```
